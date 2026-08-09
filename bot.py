@@ -17,6 +17,7 @@ user_histories = {}
 async def handle(request):
     return web.Response(text="Bot is running!")
 
+
 async def start_web_server():
     app = web.Application()
     app.router.add_get('/', handle)
@@ -59,10 +60,10 @@ async def ai_reply(message: types.Message):
     }
 
     payload = {
-        "model": "google/gemini-2.0-flash-exp:free",
+        "model": "google/gemini-2.0-flash-lite-preview-02-05:free",
         "messages": [{
             "role": "system",
-            "content": "Ты умный и дружелюбный ассистент. Отвечай кратко и понятно."
+            "content": "Ты умный и дружелюбный ассистент Эли. Отвечай кратко и понятно."
         }] + user_histories[user_id]
     }
 
@@ -80,8 +81,8 @@ async def ai_reply(message: types.Message):
                     user_histories[user_id].append({"role": "assistant", "content": reply_text})
                     await message.answer(reply_text)
                 else:
-                    print(f"Ошибка OpenRouter Status {resp.status}: {data}")
-                    await message.answer("Произошла ошибка при ответе сервера.")
+                    print(f"ОШИБКА OPENROUTER [{resp.status}]: {data}")
+                    await message.answer(f"Ошибка сервера (Код {resp.status}).")
 
         except Exception as e:
             print(f"Ошибка запроса: {e}")
