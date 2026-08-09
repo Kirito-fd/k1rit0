@@ -59,7 +59,7 @@ async def ai_reply(message: types.Message):
         "Content-Type": "application/json"
     }
 
-    payload = {
+  payload = {
         "model": "google/gemini-2.0-flash-lite-preview-02-05:free",
         "messages": [{
             "role": "system",
