@@ -1,8 +1,8 @@
 import asyncio
 import os
+import aiohttp
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
-from openai import OpenAI
 from aiohttp import web
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -10,12 +10,6 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
-
-# Подключаемся к Gemini через бесплатный шлюз OpenRouter
-ai_client = OpenAI(
-    api_key=OPENROUTER_API_KEY,
-    base_url="https://openrouter.ai/api/v1"
-)
 
 user_histories = {}
 
@@ -42,7 +36,7 @@ async def start_cmd(message: types.Message):
 async def reset_cmd(message: types.Message):
     user_id = message.from_user.id
     user_histories[user_id] = []
-    await message.answer("🧠 История нашего диалога очищена!")
+    await message.answer("🧠 История диалога очищена!")
 
 
 @dp.message(F.text)
@@ -59,26 +53,39 @@ async def ai_reply(message: types.Message):
 
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
 
-    try:
-        messages = [{
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "model": "google/gemini-2.0-flash-exp:free",
+        "messages": [{
             "role": "system",
-            "content": "Ты умный и дружелюбный ассистент. Отвечай кратко, по делу и понятным языком."
+            "content": "Ты умный и дружелюбный ассистент. Отвечай кратко и понятно."
         }] + user_histories[user_id]
+    }
 
-        response = ai_client.chat.completions.create(
-            model="google/gemini-2.0-flash-exp:free",
-            messages=messages,
-            max_tokens=300
-        )
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers=headers,
+                json=payload
+            ) as resp:
+                data = await resp.json()
 
-        reply_text = response.choices[0].message.content
-        user_histories[user_id].append({"role": "assistant", "content": reply_text})
+                if resp.status == 200 and "choices" in data:
+                    reply_text = data["choices"][0]["message"]["content"]
+                    user_histories[user_id].append({"role": "assistant", "content": reply_text})
+                    await message.answer(reply_text)
+                else:
+                    print(f"Ошибка OpenRouter Status {resp.status}: {data}")
+                    await message.answer("Произошла ошибка при ответе сервера.")
 
-        await message.answer(reply_text)
-
-    except Exception as e:
-        await message.answer("Произошла ошибка при обработке запроса.")
-        print(f"Ошибка API: {e}")
+        except Exception as e:
+            print(f"Ошибка запроса: {e}")
+            await message.answer("Ошибка соединения.")
 
 
 async def main():
