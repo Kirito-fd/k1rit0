@@ -5,22 +5,21 @@ from aiogram.filters import Command
 from openai import OpenAI
 from aiohttp import web
 
-# Считываем ключи из переменных окружения сервера
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
 
+# Подключаемся к Gemini через бесплатный шлюз OpenRouter
 ai_client = OpenAI(
-    api_key=DEEPSEEK_API_KEY,
-    base_url="https://api.deepseek.com"
+    api_key=OPENROUTER_API_KEY,
+    base_url="https://openrouter.ai/api/v1"
 )
 
 user_histories = {}
 
 
-# --- Веб-сервер для успешной проверки порта на Render ---
 async def handle(request):
     return web.Response(text="Bot is running!")
 
@@ -32,12 +31,11 @@ async def start_web_server():
     port = int(os.environ.get("PORT", 8080))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-# -----------------------------------------------------
 
 
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
-    await message.answer("Привет! Я ИИ-помощник на базе DeepSeek. Задавай любой вопрос!")
+    await message.answer("Привет! Я Эли. Задавай любой вопрос!")
 
 
 @dp.message(Command("reset"))
@@ -68,7 +66,7 @@ async def ai_reply(message: types.Message):
         }] + user_histories[user_id]
 
         response = ai_client.chat.completions.create(
-            model="deepseek-chat",
+            model="google/gemini-2.0-flash-exp:free",
             messages=messages,
             max_tokens=300
         )
@@ -79,13 +77,13 @@ async def ai_reply(message: types.Message):
         await message.answer(reply_text)
 
     except Exception as e:
-        await message.answer("Произошла ошибка при обработке запроса к DeepSeek.")
+        await message.answer("Произошла ошибка при обработке запроса.")
         print(f"Ошибка API: {e}")
 
 
 async def main():
     await start_web_server()
-    print("Бот на базе DeepSeek запущен!")
+    print("Бот запущен!")
     await dp.start_polling(bot)
 
 
