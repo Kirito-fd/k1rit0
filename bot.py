@@ -60,7 +60,7 @@ async def ai_reply(message: types.Message):
     }
 
     payload = {
-        "model": "google/gemini-2.0-flash-lite-preview-02-05:free",
+        "model": "meta-llama/llama-3.3-70b-instruct:free",
         "messages": [{
             "role": "system",
             "content": "Ты умный и дружелюбный ассистент Эли. Отвечай кратко и понятно."
