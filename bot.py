@@ -3,6 +3,7 @@ import os
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from openai import OpenAI
+from aiohttp import web
 
 # Считываем ключи из переменных окружения сервера
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -17,6 +18,21 @@ ai_client = OpenAI(
 )
 
 user_histories = {}
+
+
+# --- Веб-сервер для успешной проверки порта на Render ---
+async def handle(request):
+    return web.Response(text="Bot is running!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get('/', handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+# -----------------------------------------------------
 
 
 @dp.message(Command("start"))
@@ -68,6 +84,7 @@ async def ai_reply(message: types.Message):
 
 
 async def main():
+    await start_web_server()
     print("Бот на базе DeepSeek запущен!")
     await dp.start_polling(bot)
 
