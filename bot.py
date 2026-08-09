@@ -1,32 +1,29 @@
 import asyncio
+import os
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from openai import OpenAI
 
-# ---------------- НАСТРОЙКИ ----------------
-TELEGRAM_BOT_TOKEN = "8897931947:AAEajnqItpXdAtiGF-jd_zULlPKcJxqpvNA"
-DEEPSEEK_API_KEY = "sk-129f1329464f4067a34e9ea9dd5fea57"  # Твой ключ с platform.deepseek.com
+# Считываем ключи из переменных окружения сервера
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
 
-# Подключаемся к API DeepSeek
 ai_client = OpenAI(
     api_key=DEEPSEEK_API_KEY,
     base_url="https://api.deepseek.com"
 )
 
-# Память диалогов: {user_id: [{"role": "...", "content": "..."}]}
 user_histories = {}
 
 
-# Команда /start
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
     await message.answer("Привет! Я ИИ-помощник на базе DeepSeek. Задавай любой вопрос!")
 
 
-# Команда /reset — очистить историю диалога
 @dp.message(Command("reset"))
 async def reset_cmd(message: types.Message):
     user_id = message.from_user.id
@@ -34,7 +31,6 @@ async def reset_cmd(message: types.Message):
     await message.answer("🧠 История нашего диалога очищена!")
 
 
-# Обработка входящих сообщений
 @dp.message(F.text)
 async def ai_reply(message: types.Message):
     user_id = message.from_user.id
@@ -44,7 +40,6 @@ async def ai_reply(message: types.Message):
 
     user_histories[user_id].append({"role": "user", "content": message.text})
 
-    # Ограничение истории последними 10 сообщениями
     if len(user_histories[user_id]) > 10:
         user_histories[user_id] = user_histories[user_id][-10:]
 
