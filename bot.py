@@ -1,6 +1,6 @@
 import os
 import asyncio
-import google.generativeai as genai
+import aiohttp
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiohttp import web
@@ -8,10 +8,6 @@ from aiohttp import web
 # --- НАСТРОЙКИ ПЕРЕМЕННЫХ ---
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
-
-# Инициализация Gemini
-genai.configure(api_key=GOOGLE_API_KEY, transport='rest')
-ai_model = genai.GenerativeModel('gemini-1.5-flash')
 
 user_histories = {}
 active_chats = {}   # chat_id: True/False
@@ -46,24 +42,41 @@ async def start_web_server():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-# --- ЗАПРОС К GEMINI ---
+# --- ПРЯМОЙ ЗАПРОС К GEMINI ЧЕРЕЗ HTTP ---
 async def ask_gemini(prompt: str, user_id: int) -> str:
     if not GOOGLE_API_KEY:
         return "Ошибка: Не задан GOOGLE_API_KEY."
     
+    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GOOGLE_API_KEY}"
+    
+    if user_id not in user_histories:
+        user_histories[user_id] = [
+            {"role": "user", "parts": [{"text": ELIZABETH_PROMPT}]},
+            {"role": "model", "parts": [{"text": "Поняла. Я буду следовать этой инструкции и оставаться Элизабет."}]}
+        ]
+    
+    history = user_histories[user_id]
+    history.append({"role": "user", "parts": [{"text": prompt}]})
+    
+    payload = {
+        "contents": history
+    }
+    
     try:
-        if user_id not in user_histories:
-            chat = ai_model.start_chat(history=[
-                {"role": "user", "parts": [ELIZABETH_PROMPT]},
-                {"role": "model", "parts": ["Поняла. Я буду следовать этой инструкции и оставаться Элизабет."]}
-            ])
-            user_histories[user_id] = chat
-        
-        chat = user_histories[user_id]
-        response = await chat.send_message_async(prompt)
-        return response.text
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload) as response:
+                if response.status != 200:
+                    err_text = await response.text()
+                    return f"Ошибка API ({response.status}): {err_text}"
+                
+                data = await response.json()
+                reply_text = data["candidates"][0]["content"]["parts"][0]["text"]
+                
+                # Добавляем ответ модели в историю
+                history.append({"role": "model", "parts": [{"text": reply_text}]})
+                return reply_text
     except Exception as e:
-        return f"Ошибка Gemini: {e}"
+        return f"Ошибка запроса: {e}"
 
 # --- ОБРАБОТКА ЛИЧНЫХ СООБЩЕНИЙ С БОТОМ ---
 @dp.message(Command("start"))
