@@ -9,9 +9,9 @@ from aiohttp import web
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 
-# Инициализация Gemini
+# Инициализация с принудительной версией API v1
 genai.configure(api_key=GOOGLE_API_KEY, transport='rest')
-ai_model = genai.GenerativeModel('models/gemini-1.5-flash')
+ai_model = genai.GenerativeModel('gemini-1.5-flash', api_version='v1')
 
 user_histories = {}
 active_chats = {}   # chat_id: True/False
@@ -84,7 +84,7 @@ async def handle_direct_message(message: types.Message):
     reply = await ask_gemini(message.text, message.from_user.id)
     await message.answer(reply)
 
-# --- ОБРАБОТКА БИЗНЕС-СООБЩЕНИЙ (ВСЕ КОМАНДЫ НА МЕСТЕ) ---
+# --- ОБРАБОТКА БИЗНЕС-СООБЩЕНИЙ ---
 @dp.business_message()
 async def handle_business_message(message: types.Message):
     if not message.text:
