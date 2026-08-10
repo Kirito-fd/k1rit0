@@ -1,7 +1,7 @@
 import os
 import asyncio
 
-# Исправление для поддержки asyncio в Python 3.14 (Pyrogram)
+# Исправление asyncio для Python 3.14
 try:
     asyncio.get_event_loop()
 except RuntimeError:
@@ -13,13 +13,12 @@ from aiogram.filters import Command
 from pyrogram import Client, filters as pyro_filters, types as pyro_types
 from pyrogram.enums import ChatAction
 
-# --- НАСТРОЙКИ ПЕРЕМЕННЫХ ---
+# --- НАСТРОЙКИ ---
 API_ID = os.getenv("API_ID")
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-# Преобразование API_ID в int, если переменная существует
 API_ID = int(API_ID) if API_ID and API_ID.isdigit() else None
 
 AI_MODEL = "openrouter/free"
@@ -33,16 +32,13 @@ ELIZABETH_PROMPT = (
     "Отвечай естественным образом, как в переписке, избегай сухого или формального тона."
 )
 
-# Инициализация клиентов
 bot = Bot(token=BOT_TOKEN) if BOT_TOKEN else None
 dp = Dispatcher()
 userbot = Client("eli_userbot", api_id=API_ID, api_hash=API_HASH) if (API_ID and API_HASH) else None
 
-
-# --- ЗАПРОС К ИИ ---
 async def ask_openrouter(prompt: str, user_id: int) -> str:
     if not OPENROUTER_API_KEY:
-        return "Ошибка: Не задан OPENROUTER_API_KEY в переменные окружения."
+        return "Ошибка: Не задан OPENROUTER_API_KEY."
     
     if user_id not in user_histories:
         user_histories[user_id] = [{"role": "system", "content": ELIZABETH_PROMPT}]
@@ -73,8 +69,6 @@ async def ask_openrouter(prompt: str, user_id: int) -> str:
     except Exception as e:
         return f"Ошибка запроса: {e}"
 
-
-# --- 1. ЛОГИКА ОБЫЧНОГО БОТА (aiogram) ---
 if dp:
     @dp.message(Command("start"))
     async def cmd_start(message: aiogram_types.Message):
@@ -87,8 +81,6 @@ if dp:
             reply = await ask_openrouter(message.text, message.from_user.id)
             await message.answer(reply)
 
-
-# --- 2. ЛОГИКА ЮЗЕРБОТА-СЕКРЕТАРЯ (Pyrogram) ---
 if userbot:
     @userbot.on_message(pyro_filters.me & pyro_filters.command("ai", prefixes="."))
     async def userbot_ai_cmd(client: Client, message: pyro_types.Message):
@@ -105,14 +97,12 @@ if userbot:
             await message.edit_text(f"Автоответчик Элизабет: **{state}**")
 
     @userbot.on_message(pyro_filters.private & ~pyro_filters.me)
-     async def userbot_auto_reply(client: Client, message: pyro_types.Message):
+    async def userbot_auto_reply(client: Client, message: pyro_types.Message):
         if AI_AUTO_REPLY_GLOBAL and message.text:
             await client.send_chat_action(message.chat.id, ChatAction.TYPING)
             reply = await ask_openrouter(message.text, message.from_user.id)
             await message.reply_text(reply)
 
-
-# --- ОДНОВРЕМЕННЫЙ ЗАПУСК ---
 async def main():
     tasks = []
     if bot:
@@ -123,10 +113,10 @@ async def main():
         tasks.append(userbot.start())
         
     if not tasks:
-        print("Ошибка: Не заданы ключи авторизации в Environment!")
+        print("Ошибка: Не заданы ключи авторизации!")
         return
 
     await asyncio.gather(*tasks)
 
-if name == "__main__":
+if __name__ == "__main__":
     asyncio.run(main())
