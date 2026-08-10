@@ -9,7 +9,8 @@ from aiohttp import web
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 
-AI_MODEL = "openrouter/free"
+# Модель заменена на более надежную бесплатную версию Llama 3.3
+AI_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
 
 user_histories = {}
 active_chats = {}   # chat_id: True/False
@@ -108,47 +109,55 @@ async def handle_business_message(message: types.Message):
     lower_text = text.lower()
     bus_id = message.business_connection_id
 
-    # 1. Команда ВКЛ
+    # Проверка отправителя: команда должна исходить от владельца аккаунта (chat_id != from_user.id)
+    is_owner = (message.from_user.id != chat_id)
+
+    # 1. Команда ВКЛ (Только для владельца)
     if lower_text in ["!эли вкл", "/bot_on"]:
-        active_chats[chat_id] = True
-        await bot.send_message(chat_id=chat_id, text="✨ Элизабет подключилась к диалогу!", business_connection_id=bus_id)
+        if is_owner:
+            active_chats[chat_id] = True
+            await bot.send_message(chat_id=chat_id, text="✨ Элизабет подключилась к диалогу!", business_connection_id=bus_id)
         return
 
-    # 2. Команда ВЫКЛ
+    # 2. Команда ВЫКЛ (Только для владельца)
     if lower_text in ["!эли выкл", "/bot_off"]:
-        active_chats[chat_id] = False
-        await bot.send_message(chat_id=chat_id, text="💤 Элизабет отключена в этом чате.", business_connection_id=bus_id)
+        if is_owner:
+            active_chats[chat_id] = False
+            await bot.send_message(chat_id=chat_id, text="💤 Элизабет отключена в этом чате.", business_connection_id=bus_id)
         return
 
-    # 3. Статус
+    # 3. Статус (Только для владельца)
     if lower_text in ["!эли инфо", "!эли статус"]:
-        status = "ВКЛЮЧЕНА ✨" if active_chats.get(chat_id, False) else "ВЫКЛЮЧЕНА 💤"
-        await bot.send_message(chat_id=chat_id, text=f"📊 Статус Элизабет в этом чате: {status}", business_connection_id=bus_id)
+        if is_owner:
+            status = "ВКЛЮЧЕНА ✨" if active_chats.get(chat_id, False) else "ВЫКЛЮЧЕНА 💤"
+            await bot.send_message(chat_id=chat_id, text=f"📊 Статус Элизабет в этом чате: {status}", business_connection_id=bus_id)
         return
 
-    # 4. Спам
+    # 4. Спам (Только для владельца)
     if lower_text.startswith("!эли спам"):
-        parts = text.split()
-        if len(parts) >= 3:
-            count = int(parts[-1]) if parts[-1].isdigit() else 3
-            count = min(count, 10)
-            spam_msg = " ".join(parts[2:-1]) if parts[-1].isdigit() else " ".join(parts[2:])
-            for _ in range(count):
-                await bot.send_message(chat_id=chat_id, text=spam_msg, business_connection_id=bus_id)
-                await asyncio.sleep(0.4)
+        if is_owner:
+            parts = text.split()
+            if len(parts) >= 3:
+                count = int(parts[-1]) if parts[-1].isdigit() else 3
+                count = min(count, 10)
+                spam_msg = " ".join(parts[2:-1]) if parts[-1].isdigit() else " ".join(parts[2:])
+                for _ in range(count):
+                    await bot.send_message(chat_id=chat_id, text=spam_msg, business_connection_id=bus_id)
+                    await asyncio.sleep(0.4)
         return
 
-    # 5. Сброс
+    # 5. Сброс памяти (Только для владельца)
     if lower_text in ["!эли сброс", "!эли кэш"]:
-        user_histories.pop(chat_id, None)
-        await bot.send_message(chat_id=chat_id, text="🧹 Память диалога очищена!", business_connection_id=bus_id)
+        if is_owner:
+            user_histories.pop(chat_id, None)
+            await bot.send_message(chat_id=chat_id, text="🧹 Память диалога очищена!", business_connection_id=bus_id)
         return
 
-    # Проверяем, включен ли бот для текущего чата
+    # ГЕНЕРАЦИЯ ОТВЕТА ИИ
     if active_chats.get(chat_id, False):
         bot_info = await bot.get_me()
-        # Отвечаем ТОЛЬКО на сообщения от собеседника (игнорируем сообщения от самого бота)
-        if message.from_user.id != bot_info.id:
+        # Отвечаем только если сообщение пришло от собеседника (не от самого владельца и не от бота)
+        if not is_owner and message.from_user.id != bot_info.id:
             await bot.send_chat_action(chat_id=chat_id, action="typing", business_connection_id=bus_id)
             reply = await ask_openrouter(message.text, chat_id)
             await bot.send_message(chat_id=chat_id, text=reply, business_connection_id=bus_id)
