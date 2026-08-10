@@ -60,7 +60,7 @@ async def ai_reply(message: types.Message):
     }
 
     payload = {
-        "model": "deepseek/deepseek-r1:free",
+        "model": "openrouter/free",
         "messages": [{
             "role": "system",
             "content": "Ты умный и дружелюбный ассистент Эли. Отвечай кратко и понятно."
