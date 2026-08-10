@@ -9,7 +9,7 @@ from aiohttp import web
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 
-# Инициализация официального клиента Google Gemini с REST-транспортом
+# Инициализация Gemini
 genai.configure(api_key=GOOGLE_API_KEY, transport='rest')
 ai_model = genai.GenerativeModel('gemini-1.5-flash')
 
