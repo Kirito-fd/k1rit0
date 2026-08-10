@@ -12,7 +12,7 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 AI_MODEL = "openrouter/free"
 
 user_histories = {}
-active_chats = {}   # chat_id: True/False для бизнес-чатов
+active_chats = {}   # chat_id: True/False
 
 ELIZABETH_PROMPT = (
     "Ты — Элизабет Лионес из аниме «Семь смертных грехов». "
@@ -88,7 +88,6 @@ async def handle_direct_message(message: types.Message):
     if not message.text:
         return
     
-    # Очистка памяти в ЛС
     if message.text.strip().lower() in ["!эли сброс", "!эли кэш", "/reset"]:
         user_histories.pop(message.from_user.id, None)
         await message.answer("🧹 Моя память обнулена!")
@@ -109,17 +108,25 @@ async def handle_business_message(message: types.Message):
     lower_text = text.lower()
     bus_id = message.business_connection_id
 
-    # Управление в бизнес-чате
+    # 1. Включить бота
     if lower_text in ["!эли вкл", "/bot_on"]:
         active_chats[chat_id] = True
         await message.answer("✨ Элизабет подключилась к диалогу!", business_connection_id=bus_id)
         return
 
+    # 2. Выключить бота
     if lower_text in ["!эли выкл", "/bot_off"]:
         active_chats[chat_id] = False
         await message.answer("💤 Элизабет отключена в этом чате.", business_connection_id=bus_id)
         return
 
+    # 3. Проверить статус бота
+    if lower_text in ["!эли инфо", "!эли статус"]:
+        status = "ВКЛЮЧЕНА ✨" if active_chats.get(chat_id, False) else "ВЫКЛЮЧЕНА 💤"
+        await message.answer(f"📊 Статус Элизабет в этом чате: {status}", business_connection_id=bus_id)
+        return
+
+    # 4. Спам
     if lower_text.startswith("!эли спам"):
         parts = text.split()
         if len(parts) >= 3:
@@ -131,13 +138,17 @@ async def handle_business_message(message: types.Message):
                 await asyncio.sleep(0.4)
         return
 
+    # 5. Сброс
     if lower_text in ["!эли сброс", "!эли кэш"]:
         user_histories.pop(chat_id, None)
         await message.answer("🧹 Память диалога очищена!", business_connection_id=bus_id)
         return
 
-    # Отвечаем собеседнику только если режим включен для этого чата
+    # Если сообщение было отправлено владельцем аккаунта (то есть тобой),
+    # бот не генерирует ответ ИИ сам на свои/твои сообщения
+    # (отвечает только на входящие от собеседника, если режим включен):
     if active_chats.get(chat_id, False):
+        # Отвечаем только если сообщение пришло от собеседника
         await bot.send_chat_action(chat_id=chat_id, action="typing", business_connection_id=bus_id)
         reply = await ask_openrouter(message.text, chat_id)
         await message.answer(text=reply, business_connection_id=bus_id)
