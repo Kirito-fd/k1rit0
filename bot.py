@@ -1,6 +1,6 @@
 import os
 import asyncio
-import google.generativeai as genai
+from google import genai
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiohttp import web
@@ -9,11 +9,10 @@ from aiohttp import web
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 
-# Инициализация с принудительной версией API v1
-genai.configure(api_key=GOOGLE_API_KEY, transport='rest')
-ai_model = genai.GenerativeModel('gemini-1.5-flash', api_version='v1')
+# Инициализация нового клиента Google GenAI
+client = genai.Client(api_key=GOOGLE_API_KEY)
 
-user_histories = {}
+user_chats = {}     # Для хранения истории чатов
 active_chats = {}   # chat_id: True/False
 
 ELIZABETH_PROMPT = (
@@ -46,21 +45,24 @@ async def start_web_server():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-# --- ЗАПРОС К GEMINI ---
+# --- ЗАПРОС К GEMINI ЧЕРЕЗ НОВЫЙ SDK ---
 async def ask_gemini(prompt: str, user_id: int) -> str:
     if not GOOGLE_API_KEY:
         return "Ошибка: Не задан GOOGLE_API_KEY."
     
     try:
-        if user_id not in user_histories:
-            chat = ai_model.start_chat(history=[
-                {"role": "user", "parts": [ELIZABETH_PROMPT]},
-                {"role": "model", "parts": ["Поняла. Я буду следовать этой инструкции и оставаться Элизабет."]}
-            ])
-            user_histories[user_id] = chat
+        if user_id not in user_chats:
+            # Создаем чат с системной инструкцией в новом SDK
+            user_chats[user_id] = client.chats.create(
+                model="gemini-1.5-flash",
+                config=genai.types.GenerateContentConfig(
+                    system_instruction=ELIZABETH_PROMPT,
+                    temperature=0.7,
+                )
+            )
         
-        chat = user_histories[user_id]
-        response = await chat.send_message_async(prompt)
+        chat = user_chats[user_id]
+        response = chat.send_message(prompt)
         return response.text
     except Exception as e:
         return f"Ошибка Gemini: {e}"
@@ -76,7 +78,7 @@ async def handle_direct_message(message: types.Message):
         return
     
     if message.text.strip().lower() in ["!эли сброс", "!эли кэш", "/reset"]:
-        user_histories.pop(message.from_user.id, None)
+        user_chats.pop(message.from_user.id, None)
         await message.answer("🧹 Моя память обнулена!")
         return
 
@@ -134,7 +136,7 @@ async def handle_business_message(message: types.Message):
     # 5. Сброс истории чата
     if lower_text in ["!эли сброс", "!эли кэш"]:
         if is_owner:
-            user_histories.pop(chat_id, None)
+            user_chats.pop(chat_id, None)
             await bot.send_message(chat_id=chat_id, text="🧹 Память диалога очищена!", business_connection_id=bus_id)
         return
 
