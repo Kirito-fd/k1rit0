@@ -1,16 +1,17 @@
 import os
 import asyncio
-import aiohttp
+import google.generativeai as genai
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiohttp import web
 
 # --- НАСТРОЙКИ ПЕРЕМЕННЫХ ---
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 
-# Полностью рабочее имя бесплатной модели в OpenRouter API
-AI_MODEL = "google/gemma-2-9b-it:free"
+# Инициализация Gemini
+genai.configure(api_key=GOOGLE_API_KEY)
+ai_model = genai.GenerativeModel('gemini-1.5-flash')
 
 user_histories = {}
 active_chats = {}   # chat_id: True/False
@@ -45,41 +46,27 @@ async def start_web_server():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-# --- ЗАПРОС К ИИ ---
-async def ask_openrouter(prompt: str, user_id: int) -> str:
-    if not OPENROUTER_API_KEY:
-        return "Ошибка: Не задан OPENROUTER_API_KEY."
+# --- ЗАПРОС К GEMINI ---
+async def ask_gemini(prompt: str, user_id: int) -> str:
+    if not GOOGLE_API_KEY:
+        return "Ошибка: Не задан GOOGLE_API_KEY."
     
-    if user_id not in user_histories:
-        user_histories[user_id] = [{"role": "system", "content": ELIZABETH_PROMPT}]
-    
-    user_histories[user_id].append({"role": "user", "content": prompt})
-    if len(user_histories[user_id]) > 11:
-        user_histories[user_id] = [user_histories[user_id][0]] + user_histories[user_id][-10:]
-
-    url = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": AI_MODEL,
-        "messages": user_histories[user_id]
-    }
-
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, headers=headers) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    reply = data["choices"][0]["message"]["content"]
-                    user_histories[user_id].append({"role": "assistant", "content": reply})
-                    return reply
-                return f"Ошибка ИИ (Код {resp.status})"
+        if user_id not in user_histories:
+            # Создаем чат с системным промптом через историю
+            chat = ai_model.start_chat(history=[
+                {"role": "user", "parts": [ELIZABETH_PROMPT]},
+                {"role": "model", "parts": ["Поняла. Я буду следовать этой инструкции и оставаться Элизабет."]}
+            ])
+            user_histories[user_id] = chat
+        
+        chat = user_histories[user_id]
+        response = await chat.send_message_async(prompt)
+        return response.text
     except Exception as e:
-        return f"Ошибка соединения: {e}"
+        return f"Ошибка Gemini: {e}"
 
-# --- ОБРАБОТКА ЛИЧНЫХ СООБЩЕНИЙ (ПРЯМОЙ ЧАТ С БОТОМ) ---
+# --- ОБРАБОТКА ЛИЧНЫХ СООБЩЕНИЙ ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer("Привет! Я Элизабет. Рада с тобой пообщаться! ✨")
@@ -95,7 +82,7 @@ async def handle_direct_message(message: types.Message):
         return
 
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
-    reply = await ask_openrouter(message.text, message.from_user.id)
+    reply = await ask_gemini(message.text, message.from_user.id)
     await message.answer(reply)
 
 # --- ОБРАБОТКА БИЗНЕС-СООБЩЕНИЙ ---
@@ -153,12 +140,12 @@ async def handle_business_message(message: types.Message):
             await bot.send_message(chat_id=chat_id, text="🧹 Память диалога очищена!", business_connection_id=bus_id)
         return
 
-    # Ответ на входящие реплики
+    # Ответ на входящие реплики собеседника
     if active_chats.get(chat_id, False):
         bot_info = await bot.get_me()
         if not is_owner and message.from_user.id != bot_info.id:
             await bot.send_chat_action(chat_id=chat_id, action="typing", business_connection_id=bus_id)
-            reply = await ask_openrouter(message.text, chat_id)
+            reply = await ask_gemini(message.text, chat_id)
             await bot.send_message(chat_id=chat_id, text=reply, business_connection_id=bus_id)
 
 # --- ГЛАВНАЯ ТОЧКА ВХОДА ---
@@ -168,7 +155,7 @@ async def main():
         return
     
     await start_web_server()
-    print("Запуск бизнес-бота Элизабет...")
+    print("Запуск бизнес-бота Элизабет на Gemini...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
