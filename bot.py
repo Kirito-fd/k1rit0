@@ -9,9 +9,9 @@ from aiohttp import web
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 
-# Инициализация Gemini
+# Инициализация Gemini с актуальной и стабильной моделью
 genai.configure(api_key=GOOGLE_API_KEY)
-ai_model = genai.GenerativeModel('gemini-1.5-flash')
+ai_model = genai.GenerativeModel('gemini-2.5-flash')
 
 user_histories = {}
 active_chats = {}   # chat_id: True/False
@@ -53,7 +53,6 @@ async def ask_gemini(prompt: str, user_id: int) -> str:
     
     try:
         if user_id not in user_histories:
-            # Создаем чат с системным промптом через историю
             chat = ai_model.start_chat(history=[
                 {"role": "user", "parts": [ELIZABETH_PROMPT]},
                 {"role": "model", "parts": ["Поняла. Я буду следовать этой инструкции и оставаться Элизабет."]}
@@ -96,31 +95,26 @@ async def handle_business_message(message: types.Message):
     lower_text = text.lower()
     bus_id = message.business_connection_id
 
-    # Проверка: команда отправлена хозяином аккаунта
     is_owner = (message.from_user.id != chat_id)
 
-    # 1. Команда ВКЛ (Только хозяин)
     if lower_text in ["!эли вкл", "/bot_on"]:
         if is_owner:
             active_chats[chat_id] = True
             await bot.send_message(chat_id=chat_id, text="✨ Элизабет подключилась к диалогу!", business_connection_id=bus_id)
         return
 
-    # 2. Команда ВЫКЛ (Только хозяин)
     if lower_text in ["!эли выкл", "/bot_off"]:
         if is_owner:
             active_chats[chat_id] = False
             await bot.send_message(chat_id=chat_id, text="💤 Элизабет отключена в этом чате.", business_connection_id=bus_id)
         return
 
-    # 3. Статус (Только хозяин)
     if lower_text in ["!эли инфо", "!эли статус"]:
         if is_owner:
             status = "ВКЛЮЧЕНА ✨" if active_chats.get(chat_id, False) else "ВЫКЛЮЧЕНА 💤"
             await bot.send_message(chat_id=chat_id, text=f"📊 Статус Элизабет в этом чате: {status}", business_connection_id=bus_id)
         return
 
-    # 4. Спам (Только хозяин)
     if lower_text.startswith("!эли спам"):
         if is_owner:
             parts = text.split()
@@ -133,14 +127,12 @@ async def handle_business_message(message: types.Message):
                     await asyncio.sleep(0.4)
         return
 
-    # 5. Сброс (Только хозяин)
     if lower_text in ["!эли сброс", "!эли кэш"]:
         if is_owner:
             user_histories.pop(chat_id, None)
             await bot.send_message(chat_id=chat_id, text="🧹 Память диалога очищена!", business_connection_id=bus_id)
         return
 
-    # Ответ на входящие реплики собеседника
     if active_chats.get(chat_id, False):
         bot_info = await bot.get_me()
         if not is_owner and message.from_user.id != bot_info.id:
