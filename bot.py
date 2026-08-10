@@ -5,12 +5,6 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiohttp import web
 
-# --- НАСТРОЙКИ ПРОКСИ (если требуется для обхода блокировок на сервере) ---
-# Если прокси не нужен на самом Render (например, если сервер в другой стране), 
-# просто удали или закомментируй эти две строчки:
-os.environ["HTTP_PROXY"] = "http://твой_прокси:порт"
-os.environ["HTTPS_PROXY"] = "http://твой_прокси:порт"
-
 # --- НАСТРОЙКИ ПЕРЕМЕННЫХ ---
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
