@@ -130,7 +130,7 @@ async def ai_control_command(client, message: types.Message):
         
         response = await get_ai_response(prompt, message.chat.id)
         if response:
-[10.08.2026 16:41] 키리토: await message.edit_text(response)
+await message.edit_text(response)
         else:
             await message.edit_text("⚠️ Ошибка подключения.")
 
@@ -153,3 +153,4 @@ async def auto_ai_reply(client, message: types.Message):
 if __name__ == "__main__":
     print("Юзербот запущен от твоего имени!")
     app.run()
+            
