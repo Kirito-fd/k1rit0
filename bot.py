@@ -13,7 +13,7 @@ user_histories = {}
 active_chats = {}   # chat_id: True/False
 spam_tasks = {}     # chat_id: asyncio.Task
 
-# Промпт для личного общения С БОТОМ (Душевная, эмоции, защита)
+# Промпт для личного общения С БОТОМ (1 на 1)
 ELIZABETH_PROMPT_DIRECT = (
     "Ты — Элизабет Лионес из аниме «Семь смертных грехов». "
     "По умолчанию ты невероятно добрая, вежливая, заботливая, искренняя и милая девушка. "
@@ -28,15 +28,15 @@ ELIZABETH_PROMPT_DIRECT = (
     "3. Пиши естественно, как в реальной переписке."
 )
 
-# Промпт для БИЗНЕС-ЧАТОВ с посторонними (Адаптивный: холодный -> мат при агрессии -> снова холодный)
+# Промпт для БИЗНЕС-ЧАТОВ с посторонними (Кратко + смайлики -> Мат при агрессии)
 ELIZABETH_PROMPT_BUSINESS = (
     "Ты — Элизабет. Ты отвечаешь постороннему человеку в личных сообщениях через Telegram Business.\n"
     "ПРАВИЛА ТВОЕГО ПОВЕДЕНИЯ:\n"
-    "1. Базовый тон: Отвечай максимально кратко, холодно, сухо и отстраненно. Без лишних эмоций, без смайликов и приветливости.\n"
+    "1. Базовый тон: Отвечай довольно кратко и сдержанно, но обязательно добавляй в сообщения разные подходящие по смыслу смайлики и эмодзи (✨, 🤍, 🙄, 💅, 😒, 🙂 и любые другие).\n"
     "2. Режим ответной агрессии и мата: Если собеседник пишет тебе грубо, хамски, проявляет агрессию или использует мат — "
-    "немедленно отвечай ему тем же: жестко, с матом, колко и дерзко, ставя его на место.\n"
+    "немедленно отвечай ему тем же: жестко, с матом, колкостями и дерзостью, ставя его на место.\n"
     "3. Возврат к нормальному тону: Как только собеседник перестает хамить и материться (написал сообщение спокойно или адекватно), "
-    "ты мгновенно прекращаешь использовать мат и агрессию и снова отвечаешь в базовом строгом, сухом и холодном тоне."
+    "ты мгновенно прекращаешь использовать мат и агрессию и снова отвечаешь в базовом кратком тоне со смайликами."
 )
 
 bot = Bot(token=BOT_TOKEN) if BOT_TOKEN else None
@@ -73,7 +73,7 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str) -> str:
     payload = {
         "model": "llama-3.3-70b-versatile",
         "messages": history,
-        "temperature": 0.5
+        "temperature": 0.6
     }
     
     headers = {
@@ -115,7 +115,7 @@ async def handle_direct_message(message: types.Message):
     reply = await ask_groq(message.text, message.from_user.id, ELIZABETH_PROMPT_DIRECT)
     await message.answer(reply)
 
-# --- ОБРАБОТКА БИЗНЕС-СООБЩЕНИЙ (Общение с другими людьми) ---
+# --- ОБРАБОТКА БИЗНЕС-СООБЩЕНИЙ ---
 @dp.business_message()
 async def handle_business_message(message: types.Message):
     if not message.text:
@@ -132,20 +132,20 @@ async def handle_business_message(message: types.Message):
     if lower_text in ["!эли вкл", "/bot_on"]:
         if is_owner:
             active_chats[chat_id] = True
-            await bot.send_message(chat_id=chat_id, text="Элизабет подключена.", business_connection_id=bus_id)
+            await bot.send_message(chat_id=chat_id, text="Элизабет подключена ✨", business_connection_id=bus_id)
         return
 
     # 2. Выключение
     if lower_text in ["!эли выкл", "/bot_off"]:
         if is_owner:
             active_chats[chat_id] = False
-            await bot.send_message(chat_id=chat_id, text="Элизабет отключена.", business_connection_id=bus_id)
+            await bot.send_message(chat_id=chat_id, text="Элизабет отключена 💤", business_connection_id=bus_id)
         return
 
     # 3. Статус
     if lower_text in ["!эли инфо", "!эли статус"]:
         if is_owner:
-            status = "ВКЛЮЧЕНА" if active_chats.get(chat_id, False) else "ВЫКЛЮЧЕНА"
+            status = "ВКЛЮЧЕНА ✨" if active_chats.get(chat_id, False) else "ВЫКЛЮЧЕНА 💤"
             await bot.send_message(chat_id=chat_id, text=f"Статус: {status}", business_connection_id=bus_id)
         return
 
@@ -160,7 +160,7 @@ async def handle_business_message(message: types.Message):
                 await bot.send_message(chat_id=chat_id, text="Активного спама нет.", business_connection_id=bus_id)
         return
 
-    # 5. Спам-функция (С возможностью бесконечного спама)
+    # 5. Спам-функция
     if lower_text.startswith("!эли спам"):
         if is_owner:
             parts = text.split()
@@ -175,7 +175,6 @@ async def handle_business_message(message: types.Message):
                 if not spam_msg:
                     spam_msg = "Спам"
 
-                # Если спам уже запущен в этом чате — отменяем прошлую задачу
                 if chat_id in spam_tasks and not spam_tasks[chat_id].done():
                     spam_tasks[chat_id].cancel()
 
@@ -199,7 +198,7 @@ async def handle_business_message(message: types.Message):
     if lower_text in ["!эли сброс", "!эли кэш"]:
         if is_owner:
             user_histories.pop(chat_id, None)
-            await bot.send_message(chat_id=chat_id, text="Память чата очищена.", business_connection_id=bus_id)
+            await bot.send_message(chat_id=chat_id, text="Память чата очищена 🧹", business_connection_id=bus_id)
         return
 
     # Ответ собеседнику
@@ -218,6 +217,8 @@ async def main():
     
     await start_web_server()
     print("Запуск бота через Groq API...")
+    
+    await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
