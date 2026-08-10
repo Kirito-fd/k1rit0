@@ -1,28 +1,14 @@
 import os
 import asyncio
-
-# Исправление asyncio для Python 3.14
-try:
-    asyncio.get_event_loop()
-except RuntimeError:
-    asyncio.set_event_loop(asyncio.new_event_loop())
-
 import aiohttp
-from aiogram import Bot, Dispatcher, types as aiogram_types
+from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from pyrogram import Client, filters as pyro_filters, types as pyro_types
-from pyrogram.enums import ChatAction
 
-# --- НАСТРОЙКИ ---
-API_ID = os.getenv("API_ID")
-API_HASH = os.getenv("API_HASH")
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-
-API_ID = int(API_ID) if API_ID and API_ID.isdigit() else None
+# --- НАСТРОЙКИПЕРЕМЕННЫХ ---
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 
 AI_MODEL = "openrouter/free"
-AI_AUTO_REPLY_GLOBAL = False
 user_histories = {}
 
 ELIZABETH_PROMPT = (
@@ -34,11 +20,11 @@ ELIZABETH_PROMPT = (
 
 bot = Bot(token=BOT_TOKEN) if BOT_TOKEN else None
 dp = Dispatcher()
-userbot = Client("eli_userbot", api_id=API_ID, api_hash=API_HASH) if (API_ID and API_HASH) else None
 
+# --- ЗАПРОС К ИИ ---
 async def ask_openrouter(prompt: str, user_id: int) -> str:
     if not OPENROUTER_API_KEY:
-        return "Ошибка: Не задан OPENROUTER_API_KEY."
+        return "Ошибка: Не задан OPENROUTER_API_KEY в переменные окружения."
     
     if user_id not in user_histories:
         user_histories[user_id] = [{"role": "system", "content": ELIZABETH_PROMPT}]
@@ -65,58 +51,39 @@ async def ask_openrouter(prompt: str, user_id: int) -> str:
                     reply = data["choices"][0]["message"]["content"]
                     user_histories[user_id].append({"role": "assistant", "content": reply})
                     return reply
-                return f"Ошибка сервера ИИ (Код {resp.status})"
+                return f"Извини, произошла ошибка ИИ (Код {resp.status})"
     except Exception as e:
-        return f"Ошибка запроса: {e}"
+        return f"Ошибка соединения: {e}"
 
-if dp:
-    @dp.message(Command("start"))
-    async def cmd_start(message: aiogram_types.Message):
-        await message.answer("Привет! Я Элизабет. Напиши мне что-нибудь, и я с радостью отвечу! ✨")
+# --- 1. ОБРАБОТКА КОМАНД В ЛС С БОТОМ ---
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    await message.answer("Привет! Я Элизабет. Я подключена как твой бизнес-помощник! ✨")
 
-    @dp.message()
-    async def bot_ai_reply(message: aiogram_types.Message):
-        if message.text:
-            await bot.send_chat_action(message.chat.id, action="typing")
-            reply = await ask_openrouter(message.text, message.from_user.id)
-            await message.answer(reply)
-
-if userbot:
-    @userbot.on_message(pyro_filters.me & pyro_filters.command("ai", prefixes="."))
-    async def userbot_ai_cmd(client: Client, message: pyro_types.Message):
-        text = message.text.split(maxsplit=1)
-        if len(text) > 1:
-            prompt = text[1]
-            await message.edit_text("Думаю...")
-            reply = await ask_openrouter(prompt, message.from_user.id)
-            await message.edit_text(reply)
-        else:
-            global AI_AUTO_REPLY_GLOBAL
-            AI_AUTO_REPLY_GLOBAL = not AI_AUTO_REPLY_GLOBAL
-            state = "ВКЛЮЧЕН" if AI_AUTO_REPLY_GLOBAL else "ВЫКЛЮЧЕН"
-            await message.edit_text(f"Автоответчик Элизабет: **{state}**")
-
-    @userbot.on_message(pyro_filters.private & ~pyro_filters.me)
-    async def userbot_auto_reply(client: Client, message: pyro_types.Message):
-        if AI_AUTO_REPLY_GLOBAL and message.text:
-            await client.send_chat_action(message.chat.id, ChatAction.TYPING)
-            reply = await ask_openrouter(message.text, message.from_user.id)
-            await message.reply_text(reply)
+# --- 2. ОБРАБОТКА БИЗНЕС-СООБЩЕНИЙ В ЛИЧНЫХ ЧАТАХ ---
+@dp.business_message()
+async def handle_business_message(message: types.Message):
+    # Отвечаем, если пришло текстовое сообщение
+    if message.text:
+        await bot.send_chat_action(
+            chat_id=message.chat.id, 
+            action="typing", 
+            business_connection_id=message.business_connection_id
+        )
+        reply = await ask_openrouter(message.text, message.from_user.id)
+        
+        await message.answer(
+            text=reply, 
+            business_connection_id=message.business_connection_id
+        )
 
 async def main():
-    tasks = []
-    if bot:
-        print("Запуск обычного бота...")
-        tasks.append(dp.start_polling(bot))
-    if userbot:
-        print("Запуск юзербота...")
-        tasks.append(userbot.start())
-        
-    if not tasks:
-        print("Ошибка: Не заданы ключи авторизации!")
+    if not BOT_TOKEN:
+        print("Ошибка: Переменная TELEGRAM_BOT_TOKEN не задана!")
         return
-
-    await asyncio.gather(*tasks)
+    print("Запуск бизнес-бота Элизабет...")
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
