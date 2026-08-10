@@ -11,9 +11,8 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 
 AI_MODEL = "openrouter/free"
 
-# Хранилище состояний
 user_histories = {}
-active_chats = {}   # chat_id: True/False
+active_chats = {}   # chat_id: True/False для бизнес-чатов
 
 ELIZABETH_PROMPT = (
     "Ты — Элизабет Лионес из аниме «Семь смертных грехов». "
@@ -79,12 +78,27 @@ async def ask_openrouter(prompt: str, user_id: int) -> str:
     except Exception as e:
         return f"Ошибка соединения: {e}"
 
-# --- КОМАНДЫ В ЛС С БОТОМ ---
+# --- ОБРАБОТКА ЛИЧНЫХ СООБЩЕНИЙ (ПРАЙВАТ ЧАТ С БОТОМ) ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    await message.answer("Привет! Я Элизабет. Я готова работать как твой бизнес-помощник! ✨")
+    await message.answer("Привет! Я Элизабет. Рада с тобой пообщаться! ✨")
 
-# --- ОБРАБОТКА БИЗНЕС-СООБЩЕНИЙ ---
+@dp.message()
+async def handle_direct_message(message: types.Message):
+    if not message.text:
+        return
+    
+    # Очистка памяти в ЛС
+    if message.text.strip().lower() in ["!эли сброс", "!эли кэш", "/reset"]:
+        user_histories.pop(message.from_user.id, None)
+        await message.answer("🧹 Моя память обнулена!")
+        return
+
+    await bot.send_chat_action(chat_id=message.chat.id, action="typing")
+    reply = await ask_openrouter(message.text, message.from_user.id)
+    await message.answer(reply)
+
+# --- ОБРАБОТКА БИЗНЕС-СООБЩЕНИЙ (В ЧАТАХ С ДРУГИМИ ЛЮДЬМИ) ---
 @dp.business_message()
 async def handle_business_message(message: types.Message):
     if not message.text:
@@ -95,40 +109,37 @@ async def handle_business_message(message: types.Message):
     lower_text = text.lower()
     bus_id = message.business_connection_id
 
-    # 1. Включить бота в этом чате
+    # Управление в бизнес-чате
     if lower_text in ["!эли вкл", "/bot_on"]:
         active_chats[chat_id] = True
         await message.answer("✨ Элизабет подключилась к диалогу!", business_connection_id=bus_id)
         return
 
-    # 2. Выключить бота в этом чате
     if lower_text in ["!эли выкл", "/bot_off"]:
         active_chats[chat_id] = False
         await message.answer("💤 Элизабет отключена в этом чате.", business_connection_id=bus_id)
         return
 
-    # 3. Спам сообщением (пример: !эли спам Привет 5)
     if lower_text.startswith("!эли спам"):
         parts = text.split()
         if len(parts) >= 3:
             count = int(parts[-1]) if parts[-1].isdigit() else 3
-            count = min(count, 10)  # Лимит максимум 10 сообщений
+            count = min(count, 10)
             spam_msg = " ".join(parts[2:-1]) if parts[-1].isdigit() else " ".join(parts[2:])
             for _ in range(count):
                 await message.answer(spam_msg, business_connection_id=bus_id)
                 await asyncio.sleep(0.4)
         return
 
-    # 4. Сбросить память ИИ в этом диалоге
     if lower_text in ["!эли сброс", "!эли кэш"]:
-        user_histories.pop(message.from_user.id, None)
+        user_histories.pop(chat_id, None)
         await message.answer("🧹 Память диалога очищена!", business_connection_id=bus_id)
         return
 
-    # По умолчанию False (отвечает ТОЛЬКО если чат активирован через !эли вкл)
+    # Отвечаем собеседнику только если режим включен для этого чата
     if active_chats.get(chat_id, False):
         await bot.send_chat_action(chat_id=chat_id, action="typing", business_connection_id=bus_id)
-        reply = await ask_openrouter(message.text, message.from_user.id)
+        reply = await ask_openrouter(message.text, chat_id)
         await message.answer(text=reply, business_connection_id=bus_id)
 
 # --- ГЛАВНАЯ ТОЧКА ВХОДА ---
