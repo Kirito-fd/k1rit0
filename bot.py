@@ -1,4 +1,4 @@
-[10.08.2026 16:41] 키리토: import os
+import os
 import asyncio
 import aiohttp
 from pyrogram import Client, filters, types
