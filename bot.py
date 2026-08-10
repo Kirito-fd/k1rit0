@@ -7,7 +7,7 @@ from aiohttp import web
 
 # --- НАСТРОЙКИ ПЕРЕМЕННЫХ ---
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
 user_histories = {}
 active_chats = {}   # chat_id: True/False
@@ -42,38 +42,43 @@ async def start_web_server():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-# --- ПРЯМОЙ ЗАПРОС К GEMINI ЧЕРЕЗ HTTP ---
-async def ask_gemini(prompt: str, user_id: int) -> str:
-    if not GOOGLE_API_KEY:
-        return "Ошибка: Не задан GOOGLE_API_KEY."
+# --- ПРЯМОЙ ЗАПРОС К GROQ API ---
+async def ask_groq(prompt: str, user_id: int) -> str:
+    if not GROQ_API_KEY:
+        return "Ошибка: Не задан GROQ_API_KEY в настройках Render."
     
-    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GOOGLE_API_KEY}"
+    url = "https://api.groq.com/openai/v1/chat/completions"
     
     if user_id not in user_histories:
         user_histories[user_id] = [
-            {"role": "user", "parts": [{"text": ELIZABETH_PROMPT}]},
-            {"role": "model", "parts": [{"text": "Поняла. Я буду следовать этой инструкции и оставаться Элизабет."}]}
+            {"role": "system", "content": ELIZABETH_PROMPT}
         ]
     
     history = user_histories[user_id]
-    history.append({"role": "user", "parts": [{"text": prompt}]})
+    history.append({"role": "user", "content": prompt})
     
     payload = {
-        "contents": history
+        "model": "llama-3.3-70b-versatile",
+        "messages": history,
+        "temperature": 0.7
+    }
+    
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
     }
     
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload) as response:
+            async with session.post(url, json=payload, headers=headers) as response:
                 if response.status != 200:
                     err_text = await response.text()
-                    return f"Ошибка API ({response.status}): {err_text}"
+                    return f"Ошибка Groq ({response.status}): {err_text}"
                 
                 data = await response.json()
-                reply_text = data["candidates"][0]["content"]["parts"][0]["text"]
+                reply_text = data["choices"][0]["message"]["content"]
                 
-                # Добавляем ответ модели в историю
-                history.append({"role": "model", "parts": [{"text": reply_text}]})
+                history.append({"role": "assistant", "content": reply_text})
                 return reply_text
     except Exception as e:
         return f"Ошибка запроса: {e}"
@@ -94,7 +99,7 @@ async def handle_direct_message(message: types.Message):
         return
 
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
-    reply = await ask_gemini(message.text, message.from_user.id)
+    reply = await ask_groq(message.text, message.from_user.id)
     await message.answer(reply)
 
 # --- ОБРАБОТКА БИЗНЕС-СООБЩЕНИЙ ---
@@ -156,7 +161,7 @@ async def handle_business_message(message: types.Message):
         bot_info = await bot.get_me()
         if not is_owner and message.from_user.id != bot_info.id:
             await bot.send_chat_action(chat_id=chat_id, action="typing", business_connection_id=bus_id)
-            reply = await ask_gemini(message.text, chat_id)
+            reply = await ask_groq(message.text, chat_id)
             await bot.send_message(chat_id=chat_id, text=reply, business_connection_id=bus_id)
 
 # --- ЗАПУСК ---
@@ -166,7 +171,7 @@ async def main():
         return
     
     await start_web_server()
-    print("Запуск бота...")
+    print("Запуск бота через Groq API...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
