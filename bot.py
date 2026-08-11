@@ -50,21 +50,23 @@ dp = Dispatcher()
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 def parse_duration(text: str):
-    """Парсит время: 10м, 2ч, 1д или слова 'навсегда' / '0'"""
+    """Парсит время: 10м, 10 мин, 2ч, 1д или слова 'навсегда' / '0'"""
     text = text.lower().strip()
     if text in ["навсегда", "0", "inf", "forever"]:
         return None  # Бесконечный мут
 
-    match = re.match(r"^(\d+)([мчдmhd]?)$", text)
+    match = re.match(r"^(\d+)\s*([а-яa-z]*)$", text)
     if not match:
-        return 10 * 60  # По умолчанию 10 минут
+        return 10 * 60
 
-    value, unit = int(match.group(1)), match.group(2)
-    if unit in ["ч", "h"]:
+    value = int(match.group(1))
+    unit = match.group(2)
+
+    if unit.startswith(("ч", "h")):
         return value * 3600
-    elif unit in ["д", "d"]:
+    elif unit.startswith(("д", "d")):
         return value * 86400
-    else:
+    else:  # По умолчанию минуты (м, мин, min, m и т.д.)
         return value * 60
 
 
@@ -167,9 +169,11 @@ async def handle_business_message(message: types.Message):
                     chat_id=chat_id,
                     message_id=message.message_id,
                 )
+                print(f"[MUTED] Сообщение {message.message_id} удалено.")
                 return
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[MUTE DELETE ERROR]: {e}")
+                return
         else:
             del muted_users[chat_id]
 
@@ -192,6 +196,17 @@ async def handle_business_message(message: types.Message):
             else:
                 muted_users[chat_id] = time.time() + duration_sec
                 time_text = f"на {duration_str}"
+
+            # Если ответил (reply) на сообщение собеседника — сразу удаляем его
+            if message.reply_to_message:
+                try:
+                    await bot.delete_business_message(
+                        business_connection_id=bus_id,
+                        chat_id=chat_id,
+                        message_id=message.reply_to_message.message_id,
+                    )
+                except Exception as e:
+                    print(f"[REPLY DELETE ERROR]: {e}")
 
             await bot.send_message(
                 chat_id=chat_id,
