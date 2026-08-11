@@ -53,7 +53,7 @@ def parse_duration(text: str):
     """Парсит время: 10м, 10 мин, 2ч, 1д или слова 'навсегда' / '0'"""
     text = text.lower().strip()
     if text in ["навсегда", "0", "inf", "forever"]:
-        return None  # Бесконечный мут
+        return None
 
     match = re.match(r"^(\d+)\s*([а-яa-z]*)$", text)
     if not match:
@@ -66,8 +66,17 @@ def parse_duration(text: str):
         return value * 3600
     elif unit.startswith(("д", "d")):
         return value * 86400
-    else:  # По умолчанию минуты (м, мин, min, m и т.д.)
+    else:  # По умолчанию минуты
         return value * 60
+
+
+async def safe_delete_message(chat_id: int, message_id: int):
+    """Безопасное удаление сообщения через стандартный метод aiogram"""
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+        print(f"[MUTED] Сообщение {message_id} успешно удалено.")
+    except Exception as e:
+        print(f"[DELETE FAILED]: {e}")
 
 
 # --- МИКРО ВЕБ-СЕРВЕР ДЛЯ RENDER ---
@@ -159,25 +168,11 @@ async def handle_business_message(message: types.Message):
     bus_id = message.business_connection_id
     is_owner = message.from_user.id != chat_id
 
-    # Вспомогательная функция безопасного удаления
-    async def delete_msg(m_id):
-        try:
-            await bot.delete_business_message(
-                business_connection_id=bus_id,
-                chat_id=chat_id,
-                message_id=m_id,
-            )
-        except Exception:
-            try:
-                await bot.delete_message(chat_id=chat_id, message_id=m_id)
-            except Exception as e:
-                print(f"[DELETE FAILED]: {e}")
-
-    # --- 1. АВТО-УДАЛЕНИЕ СООБЩЕНИЙ В МУТЕ ---
+    # --- 1. АВТО-УДАЛЕНИЕ СООБЩЕНИЙ СОБЕСЕДНИКА В МУТЕ ---
     if not is_owner and chat_id in muted_users:
         until_time = muted_users[chat_id]
         if until_time is None or time.time() < until_time:
-            await delete_msg(message.message_id)
+            await safe_delete_message(chat_id, message.message_id)
             return
         else:
             del muted_users[chat_id]
@@ -202,9 +197,11 @@ async def handle_business_message(message: types.Message):
                 muted_users[chat_id] = time.time() + duration_sec
                 time_text = f"на {duration_str}"
 
-            # Если мут отправлен ответом на сообщение — сразу стираем его
+            # Если команда отправлена реплаем (ответом) — удаляем то сообщение
             if message.reply_to_message:
-                await delete_msg(message.reply_to_message.message_id)
+                await safe_delete_message(
+                    chat_id, message.reply_to_message.message_id
+                )
 
             await bot.send_message(
                 chat_id=chat_id,
