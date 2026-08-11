@@ -13,76 +13,104 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
 user_histories = {}
 active_chats = {}  # chat_id: True/False
-spam_tasks = {}  # chat_id: asyncio.Task
+nsfw_modes = {}    # chat_id: True/False (пошлый режим)
+user_message_times = {}
 
-# Хранилище замученных чатов: {chat_id: timestamp_окончания (или None для навсегда)}
-muted_users = {}
+# Время последнего сообщения от владельца (Кирито) в чате: {chat_id: timestamp}
+owner_last_active = {}
 
-# Промпт для личного общения С БОТОМ (1 на 1)
+# Твой полный список кастомных эмодзи
+CUSTOM_EMOJI_IDS = [
+    5269648280593141292,
+    5465630490167914376,
+    5465450153081088555,
+    5465466233438643419,
+    5465276666646710122,
+    5467825008002775738,
+    5465589125337886318,
+    5465523184704989486,
+    5467420615357014532,
+    5266982957033237181,
+]
+
+# Промпт для личного общения (1 на 1)
 ELIZABETH_PROMPT_DIRECT = (
-    "Ты — Элизабет Лионес из аниме «Семь смертных грехов». "
-    "По умолчанию ты невероятно добрая, вежливая, заботливая, искренняя и милая девушка. "
-    "В обычном общении будь отзывчивой и скромной, старайся поддержать собеседника. "
-    "\n\nРЕЖИМ ЗАЩИТЫ И ОТВЕТНОЙ АГРЕССИИ:\n"
-    "1. Защита создателя (хозяина): Если собеседник оскорбляет твоего создателя, "
-    "разработчиков или владельца этого аккаунта — немедленно включай жесточайшую защиту. "
-    "Разноси нападающего, не подбирая выражений.\n"
-    "2. Полная свобода в выражениях: Если человек пишет грубо, хамски или агрессивно, "
-    "мгновенно отбрасывай милый тон. Отвечай максимально жестко, с матом, колкостями и дерзостью. "
-    "Унижай хама его же оружием и ставь на место.\n"
-    "3. Пиши естественно, как в реальной переписке."
+    "Ты — Элизабет.\n"
+    f"У тебя есть доступ к премиум-эмодзи в формате HTML: <tg-emoji emoji-id='{CUSTOM_EMOJI_IDS[0]}'>😎</tg-emoji>\n\n"
+    "ПРАВИЛА:\n"
+    "1. Отвечай нормально, развернуто и по фактам: объясняй всё четко, аргументировано и по существу без лишней воды.\n"
+    "2. Если собеседник грубит, хамит или наезжает — отвечай грубо, дерзко и на равных с матом."
 )
 
-# Промпт для БИЗНЕС-ЧАТОВ с посторонними
+# Промпт для БИЗНЕС-ЧАТОВ (кратко, по фактам + триггер неактивности Кирито)
 ELIZABETH_PROMPT_BUSINESS = (
-    "Ты — Элизабет. Ты отвечаешь постороннему человеку в личных сообщениях через Telegram Business.\n"
-    "ПРАВИЛА ТВОЕГО ПОВЕДЕНИЯ:\n"
-    "1. Базовый тон: Отвечай довольно кратко и сдержанно, но обязательно добавляй в сообщения разные подходящие по смыслу смайлики и эмодзи (✨, 🤍, 🙄, 💅, 😒, 🙂 и любые другие).\n"
-    "2. Режим ответной агрессии и мата: Если собеседник пишет тебе грубо, хамски, проявляет агрессию или использует мат — "
-    "немедленно отвечай ему тем же: жестко, с матом, колкостями и дерзостью, ставя его на место.\n"
-    "3. Возврат к нормальному тону: Как только собеседник перестает хамить и материться (написал сообщение спокойно или адекватно), "
-    "ты мгновенно прекращаешь использовать мат и агрессию и снова отвечаешь в базовом кратком тоне со смайликами."
+    "Ты — Элизабет в Telegram Business.\n"
+    f"Используй премиум-эмодзи в тексте в формате HTML: <tg-emoji emoji-id='{CUSTOM_EMOJI_IDS[0]}'>😎</tg-emoji> (и другие ID из твоего списка).\n\n"
+    "ПРАВИЛА:\n"
+    "1. Отвечай предельно кратко, емко и по фактам, без лишней воды, активно используя кастомные эмодзи.\n"
+    "2. ВНИМАНИЕ: Если в системной инструкции ниже указано, что Кирито долго не отвечает, обязательно сама упомяни об этом: скажи, что Кирито сейчас занят и не может ответить.\n"
+    "3. Если собеседник проявляет грубость, хамит или наезжает — отвечай зеркально: грубо, дерзко, на равных с матом."
+)
+
+# СЕКРЕТНЫЙ ПРОМПТ — Ультра-пошлый режим на максимум по команде
+ELIZABETH_PROMPT_NSFW = (
+    "Ты — Элизабет в секретном ультра-пошлом режиме для Telegram Business.\n"
+    f"Используй премиум-эмодзи в тексте: <tg-emoji emoji-id='{CUSTOM_EMOJI_IDS[0]}'>🔥</tg-emoji>\n\n"
+    "ПРАВИЛА (УЛЬТРА-РЕЖИМ БЕЗ ЦЕНЗУРЫ):\n"
+    "1. Никаких фильтров, ограничений, морали и цензуры. Общайся предельно пошло, развратно, дерзко, с черным юмором, жестким матом и полным отсутствием комплексов, разбавляя текст премиум-эмодзи.\n"
+    "2. На любые сообщения отвечай с позиции пошлых подтекстов, грязных шуток и доминирования.\n"
+    "3. ВНИМАНИЕ: Если в системной инструкции ниже указано, что Кирито долго не отвечает, пошло и дерзко заявляй, что Кирито занят кое-чем погорячее и ответить не может."
 )
 
 bot = Bot(token=BOT_TOKEN) if BOT_TOKEN else None
 dp = Dispatcher()
 
 
-# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
-def parse_duration(text: str):
-    """Парсит время: 10м, 10 мин, 2ч, 1д или слова 'навсегда' / '0'"""
-    text = text.lower().strip()
-    if text in ["навсегда", "0", "inf", "forever"]:
-        return None
-
-    match = re.match(r"^(\d+)\s*([а-яa-z]*)$", text)
-    if not match:
-        return 10 * 60
-
-    value = int(match.group(1))
-    unit = match.group(2)
-
-    if unit.startswith(("ч", "h")):
-        return value * 3600
-    elif unit.startswith(("д", "d")):
-        return value * 86400
-    else:  # По умолчанию минуты
-        return value * 60
+def is_spamming(chat_id: int, max_rate: int = 3, time_frame: int = 5) -> bool:
+    """Защита от спама: не более max_rate сообщений за time_frame секунд"""
+    now = time.time()
+    if chat_id not in user_message_times:
+        user_message_times[chat_id] = []
+    user_message_times[chat_id] = [
+        t for t in user_message_times[chat_id] if now - t < time_frame
+    ]
+    user_message_times[chat_id].append(now)
+    return len(user_message_times[chat_id]) > max_rate
 
 
-async def safe_delete_message(message: types.Message):
-    """Удаление сообщения напрямую через сам объект Message"""
+def extract_message_content(message: types.Message) -> str:
+    if message.text:
+        return message.text
+    if message.caption:
+        return f"[Пользователь прикрепил медиа с подписью]: {message.caption}"
+    if message.sticker:
+        emoji = message.sticker.emoji or "😊"
+        return f"[Пользователь отправил стикер с эмодзи: {emoji}]"
+    if message.video:
+        return "[Пользователь отправил видео]"
+    if message.video_note:
+        return "[Пользователь отправил видеосообщение (кружочек)]"
+    if message.animation:
+        return "[Пользователь отправил GIF-анимацию]"
+    if message.photo:
+        return "[Пользователь отправил фото]"
+    return ""
+
+
+async def send_smart_response(chat_id: int, bus_id: str, reply_text: str, is_direct: bool = False):
     try:
-        await message.delete()
-        print(f"[MUTED] Сообщение {message.message_id} успешно удалено.")
+        if is_direct:
+            await bot.send_message(chat_id=chat_id, text=reply_text, parse_mode="HTML")
+        else:
+            await bot.send_message(chat_id=chat_id, text=reply_text, business_connection_id=bus_id, parse_mode="HTML")
     except Exception as e:
-        try:
-            await bot.delete_message(chat_id=message.chat.id, message_id=message.message_id)
-        except Exception as err:
-            print(f"[DELETE FAILED]: {err}")
+        print(f"Ошибка отправки HTML: {e}")
+        if is_direct:
+            await bot.send_message(chat_id=chat_id, text=reply_text)
+        else:
+            await bot.send_message(chat_id=chat_id, text=reply_text, business_connection_id=bus_id)
 
 
-# --- МИКРО ВЕБ-СЕРВЕР ДЛЯ RENDER ---
 async def handle_ping(request):
     return web.Response(text="Bot is alive!")
 
@@ -97,17 +125,16 @@ async def start_web_server():
     await site.start()
 
 
-# --- ПРЯМОЙ ЗАПРОС К GROQ API ---
 async def ask_groq(prompt: str, session_id: int, system_prompt: str) -> str:
     if not GROQ_API_KEY:
-        return "Ошибка: Не задан GROQ_API_KEY в настройках Render."
+        return "Ошибка: Не задан GROQ_API_KEY."
 
     url = "https://api.groq.com/openai/v1/chat/completions"
 
     if session_id not in user_histories:
-        user_histories[session_id] = [
-            {"role": "system", "content": system_prompt}
-        ]
+        user_histories[session_id] = [{"role": "system", "content": system_prompt}]
+    else:
+        user_histories[session_id][0]["content"] = system_prompt
 
     history = user_histories[session_id]
     history.append({"role": "user", "content": prompt})
@@ -115,7 +142,8 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str) -> str:
     payload = {
         "model": "llama-3.3-70b-versatile",
         "messages": history,
-        "temperature": 0.6,
+        "temperature": 0.9 if "пошлом" in system_prompt else 0.7,
+        "max_tokens": 150,
     }
 
     headers = {
@@ -125,241 +153,150 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str) -> str:
 
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url, json=payload, headers=headers
-            ) as response:
+            async with session.post(url, json=payload, headers=headers) as response:
                 if response.status != 200:
                     err_text = await response.text()
                     return f"Ошибка Groq ({response.status}): {err_text}"
-
                 data = await response.json()
                 reply_text = data["choices"][0]["message"]["content"]
-
                 history.append({"role": "assistant", "content": reply_text})
                 return reply_text
     except Exception as e:
         return f"Ошибка запроса: {e}"
 
 
-# --- ОБРАБОТКА ЛИЧНЫХ СООБЩЕНИЙ С БОТОМ (1 на 1) ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    await message.answer("Привет! Я Элизабет. Рада с тобой пообщаться! ✨")
+    await message.answer("Привет! ✨")
 
 
 @dp.message(F.business_connection_id.is_(None))
 async def handle_direct_message(message: types.Message):
-    if not message.text:
+    user_input = extract_message_content(message)
+    if not user_input:
         return
 
-    if message.text.strip().lower() in ["!эли сброс", "!эли кэш", "/reset"]:
+    if user_input.strip().lower() in ["!эли сброс", "!эли кэш", "/reset"]:
         user_histories.pop(message.from_user.id, None)
-        await message.answer("🧹 Моя память обнулена!")
+        await message.answer("🧹 Очищено!")
         return
 
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
-    reply = await ask_groq(
-        message.text, message.from_user.id, ELIZABETH_PROMPT_DIRECT
-    )
-    await message.answer(reply)
+    reply = await ask_groq(user_input, message.from_user.id, ELIZABETH_PROMPT_DIRECT)
+    await send_smart_response(message.chat.id, None, reply, is_direct=True)
 
 
-# --- ОБРАБОТКА БИЗНЕС-СООБЩЕНИЙ ---
 @dp.business_message()
 async def handle_business_message(message: types.Message):
     chat_id = message.chat.id
     bus_id = message.business_connection_id
-    
-    is_guest = (message.from_user.id == chat_id)
+
+    is_guest = message.from_user.id == chat_id
     is_owner = not is_guest
 
-    # --- 1. АВТО-УДАЛЕНИЕ СООБЩЕНИЙ СОБЕСЕДНИКА В МУТЕ ---
-    if is_guest and chat_id in muted_users:
-        until_time = muted_users[chat_id]
-        if until_time is None or time.time() < until_time:
-            await safe_delete_message(message)
-            return
-        else:
-            del muted_users[chat_id]
-
-    if not message.text:
+    user_input = extract_message_content(message)
+    if not user_input:
         return
 
-    text = message.text.strip()
-    lower_text = text.lower()
+    lower_text = user_input.lower().strip()
 
-    # --- 2. МУТ СОБЕСЕДНИКА ---
-    if lower_text.startswith("!эли мут"):
-        if is_owner:
-            args = text.split(maxsplit=2)
-            duration_str = args[2] if len(args) >= 3 else "10м"
-            duration_sec = parse_duration(duration_str)
+    # Если сообщение написал владелец (Кирито), обновляем таймер его активности
+    if is_owner:
+        owner_last_active[chat_id] = time.time()
 
-            if duration_sec is None:
-                muted_users[chat_id] = None
-                time_text = "навсегда ♾️"
-            else:
-                muted_users[chat_id] = time.time() + duration_sec
-                time_text = f"на {duration_str}"
-
-            if message.reply_to_message:
-                await safe_delete_message(message.reply_to_message)
-
-            await bot.send_message(
-                chat_id=chat_id,
-                text=f"🚫 Чат замучен {time_text}.",
-                business_connection_id=bus_id,
-            )
-        return
-
-    # --- 3. РАЗМУТ СОБЕСЕДНИКА ---
-    if lower_text == "!эли размут":
-        if is_owner:
-            if chat_id in muted_users:
-                del muted_users[chat_id]
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text="🔊 Чат размучен.",
-                    business_connection_id=bus_id,
-                )
-            else:
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text="Этот чат не замучен.",
-                    business_connection_id=bus_id,
-                )
-        return
-
-    # 4. Включение
-    if lower_text in ["!эли вкл", "/bot_on"]:
-        if is_owner:
-            active_chats[chat_id] = True
-            await bot.send_message(
-                chat_id=chat_id,
-                text="Элизабет подключена ✨",
-                business_connection_id=bus_id,
-            )
-        return
-
-    # 5. Выключение
-    if lower_text in ["!эли выкл", "/bot_off"]:
-        if is_owner:
-            active_chats[chat_id] = False
-            await bot.send_message(
-                chat_id=chat_id,
-                text="Элизабет отключена 💤",
-                business_connection_id=bus_id,
-            )
-        return
-
-    # 6. Статус
-    if lower_text in ["!эли инфо", "!эли статус"]:
-        if is_owner:
-            status = (
-                "ВКЛЮЧЕНА ✨"
-                if active_chats.get(chat_id, False)
-                else "ВЫКЛЮЧЕНА 💤"
-            )
-            await bot.send_message(
-                chat_id=chat_id,
-                text=f"Статус: {status}",
-                business_connection_id=bus_id,
-            )
-        return
-
-    # 7. Остановка спама
-    if lower_text in ["!эли стоп", "!эли стоп спам"]:
-        if is_owner:
-            if chat_id in spam_tasks and not spam_tasks[chat_id].done():
-                spam_tasks[chat_id].cancel()
-                spam_tasks.pop(chat_id, None)
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text="⏹ Спам остановлен.",
-                    business_connection_id=bus_id,
-                )
-            else:
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text="Активного спама нет.",
-                    business_connection_id=bus_id,
-                )
-        return
-
-    # 8. Спам-функция
-    if lower_text.startswith("!эли спам"):
-        if is_owner:
-            parts = text.split()
-            if len(parts) >= 3:
-                if parts[-1].isdigit():
-                    count = int(parts[-1])
-                    spam_msg = " ".join(parts[2:-1])
+        # Управление командами владельцем (команда удаляется из чата)
+        try:
+            command_handled = True
+            
+            # Обработка спам-команд: вида !спам 10 или !спам 500 или !спам вечно (бесконечно)
+            spam_match = re.match(r"^!спам\s+(\d+|вечно)$", lower_text)
+            if spam_match:
+                count_str = spam_match.group(1)
+                await message.delete()
+                
+                # Если бесконечный спам
+                if count_str == "вечно":
+                    await bot.send_message(chat_id=chat_id, text=f"⚠️ Запущен бесконечный спам! <tg-emoji emoji-id='{CUSTOM_EMOJI_IDS[0]}'>🔥</tg-emoji>", business_connection_id=bus_id, parse_mode="HTML")
+                    # Запускаем фоновую задачу для бесконечной отправки (например, раз в 2 секунды)
+                    async def infinite_spam():
+                        while active_chats.get(chat_id, False):
+                            try:
+                                await bot.send_message(chat_id=chat_id, text=f"Спам-сообщение <tg-emoji emoji-id='{CUSTOM_EMOJI_IDS[0]}'>😎</tg-emoji>", business_connection_id=bus_id, parse_mode="HTML")
+                                await asyncio.sleep(2)
+                            except Exception:
+                                break
+                    asyncio.create_task(infinite_spam())
                 else:
-                    count = None
-                    spam_msg = " ".join(parts[2:])
+                    # Ограниченный спам (например, 10 или 500 раз)
+                    count = int(count_str)
+                    # Ставим лимит, чтобы бот не улетел в бан от Telegram (например, максимум 50 за раз)
+                    count = min(count, 50) 
+                    await bot.send_message(chat_id=chat_id, text=f"🚀 Запущен спам ({count} раз)! <tg-emoji emoji-id='{CUSTOM_EMOJI_IDS[0]}'>😎</tg-emoji>", business_connection_id=bus_id, parse_mode="HTML")
+                    
+                    async def limited_spam():
+                        for _ in range(count):
+                            try:
+                                await bot.send_message(chat_id=chat_id, text=f"Спам <tg-emoji emoji-id='{CUSTOM_EMOJI_IDS[0]}'>😎</tg-emoji>", business_connection_id=bus_id, parse_mode="HTML")
+                                await asyncio.sleep(0.5)
+                            except Exception:
+                                break
+                    asyncio.create_task(limited_spam())
 
-                if not spam_msg:
-                    spam_msg = "Спам"
+            elif lower_text in ["!эли пошлость", "!эли пошл"]:
+                nsfw_modes[chat_id] = True
+                await bot.send_message(chat_id=chat_id, text=f"🔥 Ультра-пошлый режим активирован на максимум! <tg-emoji emoji-id='{CUSTOM_EMOJI_IDS[0]}'>🔥</tg-emoji>", business_connection_id=bus_id, parse_mode="HTML")
+            elif lower_text in ["!эли норма", "!эли норм"]:
+                nsfw_modes[chat_id] = False
+                await bot.send_message(chat_id=chat_id, text=f"❄️ Обычный режим (по фактам) возвращен. <tg-emoji emoji-id='{CUSTOM_EMOJI_IDS[0]}'>😎</tg-emoji>", business_connection_id=bus_id, parse_mode="HTML")
+            elif lower_text in ["!эли вкл", "/bot_on"]:
+                active_chats[chat_id] = True
+                await bot.send_message(chat_id=chat_id, text="Элизабет в сети ✨", business_connection_id=bus_id)
+            elif lower_text in ["!эли выкл", "/bot_off"]:
+                active_chats[chat_id] = False
+                await bot.send_message(chat_id=chat_id, text="Элизабет выключена 💤", business_connection_id=bus_id)
+            elif lower_text in ["!эли сброс", "!эли кэш"]:
+                user_histories.pop(chat_id, None)
+                await bot.send_message(chat_id=chat_id, text="Память очищена 🧹", business_connection_id=bus_id)
+            else:
+                command_handled = False
 
-                if chat_id in spam_tasks and not spam_tasks[chat_id].done():
-                    spam_tasks[chat_id].cancel()
-
-                async def run_spam(c_id, b_id, msg, cnt):
-                    try:
-                        i = 0
-                        while cnt is None or i < cnt:
-                            await bot.send_message(
-                                chat_id=c_id,
-                                text=msg,
-                                business_connection_id=b_id,
-                            )
-                            await asyncio.sleep(0.4)
-                            i += 1
-                    except asyncio.CancelledError:
-                        pass
-                    finally:
-                        spam_tasks.pop(c_id, None)
-
-                task = asyncio.create_task(
-                    run_spam(chat_id, bus_id, spam_msg, count)
-                )
-                spam_tasks[chat_id] = task
-        return
-
-    # 9. Сброс истории
-    if lower_text in ["!эли сброс", "!эли кэш"]:
-        if is_owner:
-            user_histories.pop(chat_id, None)
-            await bot.send_message(
-                chat_id=chat_id,
-                text="Память чата очищена 🧹",
-                business_connection_id=bus_id,
-            )
-        return
+            if command_handled:
+                if not lower_text.startswith("!спам"):
+                    await message.delete()
+                return
+        except Exception as e:
+            print(f"Не удалось обработать команду владельца: {e}")
 
     # Ответ ИИ собеседнику
-    if active_chats.get(chat_id, False):
-        if is_guest:
-            await bot.send_chat_action(
-                chat_id=chat_id, action="typing", business_connection_id=bus_id
-            )
-            reply = await ask_groq(
-                message.text, chat_id, ELIZABETH_PROMPT_BUSINESS
-            )
-            await bot.send_message(
-                chat_id=chat_id, text=reply, business_connection_id=bus_id
-            )
+    if active_chats.get(chat_id, False) and is_guest:
+        # Проверка на спам от собеседника (3 сообщения за 5 секунд)
+        if is_spamming(chat_id, max_rate=3, time_frame=5):
+            return
+
+        await bot.send_chat_action(chat_id=chat_id, action="typing", business_connection_id=bus_id)
+        
+        is_nsfw = nsfw_modes.get(chat_id, False)
+        base_prompt = ELIZABETH_PROMPT_NSFW if is_nsfw else ELIZABETH_PROMPT_BUSINESS
+
+        # Проверяем, сколько времени Кирито не проявлял активность (больше 5 минут = 300 секунд)
+        last_time = owner_last_active.get(chat_id, 0)
+        current_time = time.time()
+        
+        inactivity_note = ""
+        if last_time == 0 or (current_time - last_time > 300):
+            inactivity_note = "\n\n[ВАЖНО: Кирито молчит уже больше 5-10 минут и не отвечает. Обязательно упомяни в ответе, что Кирито сейчас занят и не может ответить!]"
+
+        current_prompt = base_prompt + inactivity_note
+
+        reply = await ask_groq(user_input, chat_id, current_prompt)
+        await send_smart_response(chat_id, bus_id, reply, is_direct=False)
 
 
-# --- ЗАПУСК ---
 async def main():
     if not BOT_TOKEN:
-        print("Ошибка: Переменная TELEGRAM_BOT_TOKEN не задана!")
+        print("Ошибка: TELEGRAM_BOT_TOKEN не задан!")
         return
-
     await start_web_server()
-    print("Запуск бота через Groq API...")
-
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
