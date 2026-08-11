@@ -3,7 +3,7 @@ import os
 import re
 import time
 import aiohttp
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiohttp import web
 
@@ -15,7 +15,7 @@ user_histories = {}
 active_chats = {}  # chat_id: True/False
 spam_tasks = {}  # chat_id: asyncio.Task
 
-# Хранилище замученных пользователей: {user_id: timestamp_окончания (или None для навсегда)}
+# Хранилище замученных чатов: {chat_id: timestamp_окончания (или None для навсегда)}
 muted_users = {}
 
 # Промпт для личного общения С БОТОМ (1 на 1)
@@ -33,7 +33,7 @@ ELIZABETH_PROMPT_DIRECT = (
     "3. Пиши естественно, как в реальной переписке."
 )
 
-# Промпт для БИЗНЕС-ЧАТОВ с посторонними (Кратко + смайлики -> Мат при агрессии)
+# Промпт для БИЗНЕС-ЧАТОВ с посторонними
 ELIZABETH_PROMPT_BUSINESS = (
     "Ты — Элизабет. Ты отвечаешь постороннему человеку в личных сообщениях через Telegram Business.\n"
     "ПРАВИЛА ТВОЕГО ПОВЕДЕНИЯ:\n"
@@ -155,11 +155,11 @@ async def handle_direct_message(message: types.Message):
 async def handle_business_message(message: types.Message):
     chat_id = message.chat.id
     bus_id = message.business_connection_id
-    user_id = message.from_user.id
+    is_owner = message.from_user.id != chat_id
 
-    # --- ПРОВЕРКА И АВТО-УДАЛЕНИЕ СООБЩЕНИЙ ЗАМУЧЕННЫХ ---
-    if user_id in muted_users:
-        until_time = muted_users[user_id]
+    # --- 1. ПРОВЕРКА И АВТО-УДАЛЕНИЕ СООБЩЕНИЙ СОБЕСЕДНИКА В МУТЕ ---
+    if not is_owner and chat_id in muted_users:
+        until_time = muted_users[chat_id]
         if until_time is None or time.time() < until_time:
             try:
                 await bot.delete_business_message(
@@ -168,76 +168,57 @@ async def handle_business_message(message: types.Message):
                     message_id=message.message_id,
                 )
                 return
-            except Exception as e:
+            except Exception:
                 pass
         else:
-            del muted_users[user_id]
+            del muted_users[chat_id]
 
     if not message.text:
         return
 
     text = message.text.strip()
     lower_text = text.lower()
-    is_owner = message.from_user.id != chat_id
 
-    # 1. Мут человека
+    # --- 2. МУТ СОБЕСЕДНИКА ---
     if lower_text.startswith("!эли мут"):
         if is_owner:
-            if not message.reply_to_message:
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text="Ответь на сообщение того, кого нужно замутить!",
-                    business_connection_id=bus_id,
-                )
-                return
-
-            target_user = message.reply_to_message.from_user
             args = text.split(maxsplit=2)
             duration_str = args[2] if len(args) >= 3 else "10м"
             duration_sec = parse_duration(duration_str)
 
             if duration_sec is None:
-                muted_users[target_user.id] = None
+                muted_users[chat_id] = None
                 time_text = "навсегда ♾️"
             else:
-                muted_users[target_user.id] = time.time() + duration_sec
+                muted_users[chat_id] = time.time() + duration_sec
                 time_text = f"на {duration_str}"
 
             await bot.send_message(
                 chat_id=chat_id,
-                text=f"🚫 Пользователь {target_user.first_name} замучен {time_text}.",
+                text=f"🚫 Чат замучен {time_text}.",
                 business_connection_id=bus_id,
             )
         return
 
-    # 2. Размут человека
+    # --- 3. РАЗМУТ СОБЕСЕДНИКА ---
     if lower_text == "!эли размут":
         if is_owner:
-            if not message.reply_to_message:
+            if chat_id in muted_users:
+                del muted_users[chat_id]
                 await bot.send_message(
                     chat_id=chat_id,
-                    text="Ответь на сообщение того, кого нужно размутить!",
-                    business_connection_id=bus_id,
-                )
-                return
-
-            target_user = message.reply_to_message.from_user
-            if target_user.id in muted_users:
-                del muted_users[target_user.id]
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text=f"🔊 Пользователь {target_user.first_name} размучен.",
+                    text="🔊 Чат размучен.",
                     business_connection_id=bus_id,
                 )
             else:
                 await bot.send_message(
                     chat_id=chat_id,
-                    text="Этот пользователь не замучен.",
+                    text="Этот чат не замучен.",
                     business_connection_id=bus_id,
                 )
         return
 
-    # 3. Включение
+    # 4. Включение
     if lower_text in ["!эли вкл", "/bot_on"]:
         if is_owner:
             active_chats[chat_id] = True
@@ -248,7 +229,7 @@ async def handle_business_message(message: types.Message):
             )
         return
 
-    # 4. Выключение
+    # 5. Выключение
     if lower_text in ["!эли выкл", "/bot_off"]:
         if is_owner:
             active_chats[chat_id] = False
@@ -259,7 +240,7 @@ async def handle_business_message(message: types.Message):
             )
         return
 
-    # 5. Статус
+    # 6. Статус
     if lower_text in ["!эли инфо", "!эли статус"]:
         if is_owner:
             status = (
@@ -274,7 +255,7 @@ async def handle_business_message(message: types.Message):
             )
         return
 
-    # 6. Остановка спама
+    # 7. Остановка спама
     if lower_text in ["!эли стоп", "!эли стоп спам"]:
         if is_owner:
             if chat_id in spam_tasks and not spam_tasks[chat_id].done():
@@ -293,7 +274,7 @@ async def handle_business_message(message: types.Message):
                 )
         return
 
-    # 7. Спам-функция
+    # 8. Спам-функция
     if lower_text.startswith("!эли спам"):
         if is_owner:
             parts = text.split()
@@ -333,7 +314,7 @@ async def handle_business_message(message: types.Message):
                 spam_tasks[chat_id] = task
         return
 
-    # 8. Сброс истории чата
+    # 9. Сброс истории чата
     if lower_text in ["!эли сброс", "!эли кэш"]:
         if is_owner:
             user_histories.pop(chat_id, None)
@@ -344,7 +325,7 @@ async def handle_business_message(message: types.Message):
             )
         return
 
-    # Ответ собеседнику
+    # Ответ ИИ собеседнику
     if active_chats.get(chat_id, False):
         bot_info = await bot.get_me()
         if not is_owner and message.from_user.id != bot_info.id:
