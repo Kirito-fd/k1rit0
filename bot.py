@@ -70,13 +70,16 @@ def parse_duration(text: str):
         return value * 60
 
 
-async def safe_delete_message(chat_id: int, message_id: int):
-    """Безопасное удаление сообщения через стандартный метод aiogram"""
+async def safe_delete_message(message: types.Message):
+    """Удаление сообщения напрямую через сам объект Message"""
     try:
-        await bot.delete_message(chat_id=chat_id, message_id=message_id)
-        print(f"[MUTED] Сообщение {message_id} успешно удалено.")
+        await message.delete()
+        print(f"[MUTED] Сообщение {message.message_id} успешно удалено.")
     except Exception as e:
-        print(f"[DELETE FAILED]: {e}")
+        try:
+            await bot.delete_message(chat_id=message.chat.id, message_id=message.message_id)
+        except Exception as err:
+            print(f"[DELETE FAILED]: {err}")
 
 
 # --- МИКРО ВЕБ-СЕРВЕР ДЛЯ RENDER ---
@@ -166,13 +169,15 @@ async def handle_direct_message(message: types.Message):
 async def handle_business_message(message: types.Message):
     chat_id = message.chat.id
     bus_id = message.business_connection_id
-    is_owner = message.from_user.id != chat_id
+    
+    is_guest = (message.from_user.id == chat_id)
+    is_owner = not is_guest
 
     # --- 1. АВТО-УДАЛЕНИЕ СООБЩЕНИЙ СОБЕСЕДНИКА В МУТЕ ---
-    if not is_owner and chat_id in muted_users:
+    if is_guest and chat_id in muted_users:
         until_time = muted_users[chat_id]
         if until_time is None or time.time() < until_time:
-            await safe_delete_message(chat_id, message.message_id)
+            await safe_delete_message(message)
             return
         else:
             del muted_users[chat_id]
@@ -197,11 +202,8 @@ async def handle_business_message(message: types.Message):
                 muted_users[chat_id] = time.time() + duration_sec
                 time_text = f"на {duration_str}"
 
-            # Если команда отправлена реплаем (ответом) — удаляем то сообщение
             if message.reply_to_message:
-                await safe_delete_message(
-                    chat_id, message.reply_to_message.message_id
-                )
+                await safe_delete_message(message.reply_to_message)
 
             await bot.send_message(
                 chat_id=chat_id,
@@ -337,7 +339,7 @@ async def handle_business_message(message: types.Message):
 
     # Ответ ИИ собеседнику
     if active_chats.get(chat_id, False):
-        if not is_owner:
+        if is_guest:
             await bot.send_chat_action(
                 chat_id=chat_id, action="typing", business_connection_id=bus_id
             )
