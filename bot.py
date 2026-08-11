@@ -17,6 +17,9 @@ active_chats = {}  # chat_id: True/False
 nsfw_modes = {}    # chat_id: True/False (пошлый режим)
 user_message_times = {}
 
+# Множество для хранения уже обработанных ID сообщений (защита от дублей)
+processed_message_ids = set()
+
 # Время последнего сообщения от владельца (Кирито) в чате: {chat_id: timestamp}
 owner_last_active = {}
 
@@ -99,7 +102,6 @@ def extract_message_content(message: types.Message) -> str:
 
 
 async def send_smart_response(chat_id: int, bus_id: str, reply_text: str, is_direct: bool = False):
-    # Добавляем ровно один кастомный эмодзи в конец текста перед отправкой
     final_text = add_random_custom_emoji(reply_text)
     try:
         if is_direct:
@@ -108,7 +110,6 @@ async def send_smart_response(chat_id: int, bus_id: str, reply_text: str, is_dir
             await bot.send_message(chat_id=chat_id, text=final_text, business_connection_id=bus_id, parse_mode="HTML")
     except Exception as e:
         print(f"Ошибка отправки HTML: {e}")
-        # Запасной вариант без тегов, если что-то пойдет не так
         if is_direct:
             await bot.send_message(chat_id=chat_id, text=reply_text)
         else:
@@ -194,6 +195,15 @@ async def handle_direct_message(message: types.Message):
 async def handle_business_message(message: types.Message):
     chat_id = message.chat.id
     bus_id = message.business_connection_id
+    msg_id = message.message_id
+
+    # Защита от дублирования апдейтов от Telegram Business
+    if msg_id in processed_message_ids:
+        return
+    processed_message_ids.add(msg_id)
+    
+    if len(processed_message_ids) > 1000:
+        processed_message_ids.clear()
 
     is_guest = message.from_user.id == chat_id
     is_owner = not is_guest
