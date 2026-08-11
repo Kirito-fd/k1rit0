@@ -133,7 +133,7 @@ async def cmd_start(message: types.Message):
     await message.answer("Привет! Я Элизабет. Рада с тобой пообщаться! ✨")
 
 
-@dp.message()
+@dp.message(F.business_connection_id.is_(None))
 async def handle_direct_message(message: types.Message):
     if not message.text:
         return
@@ -327,8 +327,7 @@ async def handle_business_message(message: types.Message):
 
     # Ответ ИИ собеседнику
     if active_chats.get(chat_id, False):
-        bot_info = await bot.get_me()
-        if not is_owner and message.from_user.id != bot_info.id:
+        if not is_owner:
             await bot.send_chat_action(
                 chat_id=chat_id, action="typing", business_connection_id=bus_id
             )
