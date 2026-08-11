@@ -159,21 +159,26 @@ async def handle_business_message(message: types.Message):
     bus_id = message.business_connection_id
     is_owner = message.from_user.id != chat_id
 
-    # --- 1. ПРОВЕРКА И АВТО-УДАЛЕНИЕ СООБЩЕНИЙ СОБЕСЕДНИКА В МУТЕ ---
+    # Вспомогательная функция безопасного удаления
+    async def delete_msg(m_id):
+        try:
+            await bot.delete_business_message(
+                business_connection_id=bus_id,
+                chat_id=chat_id,
+                message_id=m_id,
+            )
+        except Exception:
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=m_id)
+            except Exception as e:
+                print(f"[DELETE FAILED]: {e}")
+
+    # --- 1. АВТО-УДАЛЕНИЕ СООБЩЕНИЙ В МУТЕ ---
     if not is_owner and chat_id in muted_users:
         until_time = muted_users[chat_id]
         if until_time is None or time.time() < until_time:
-            try:
-                await bot.delete_business_message(
-                    business_connection_id=bus_id,
-                    chat_id=chat_id,
-                    message_id=message.message_id,
-                )
-                print(f"[MUTED] Сообщение {message.message_id} удалено.")
-                return
-            except Exception as e:
-                print(f"[MUTE DELETE ERROR]: {e}")
-                return
+            await delete_msg(message.message_id)
+            return
         else:
             del muted_users[chat_id]
 
@@ -197,16 +202,9 @@ async def handle_business_message(message: types.Message):
                 muted_users[chat_id] = time.time() + duration_sec
                 time_text = f"на {duration_str}"
 
-            # Если ответил (reply) на сообщение собеседника — сразу удаляем его
+            # Если мут отправлен ответом на сообщение — сразу стираем его
             if message.reply_to_message:
-                try:
-                    await bot.delete_business_message(
-                        business_connection_id=bus_id,
-                        chat_id=chat_id,
-                        message_id=message.reply_to_message.message_id,
-                    )
-                except Exception as e:
-                    print(f"[REPLY DELETE ERROR]: {e}")
+                await delete_msg(message.reply_to_message.message_id)
 
             await bot.send_message(
                 chat_id=chat_id,
@@ -298,7 +296,7 @@ async def handle_business_message(message: types.Message):
                     count = int(parts[-1])
                     spam_msg = " ".join(parts[2:-1])
                 else:
-                    count = None  # Бесконечный спам
+                    count = None
                     spam_msg = " ".join(parts[2:])
 
                 if not spam_msg:
@@ -329,7 +327,7 @@ async def handle_business_message(message: types.Message):
                 spam_tasks[chat_id] = task
         return
 
-    # 9. Сброс истории чата
+    # 9. Сброс истории
     if lower_text in ["!эли сброс", "!эли кэш"]:
         if is_owner:
             user_histories.pop(chat_id, None)
