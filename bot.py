@@ -17,8 +17,11 @@ active_chats = {}  # chat_id: True/False
 nsfw_modes = {}    # chat_id: True/False (пошлый режим)
 user_message_times = {}
 
-# Множество для хранения уже обработанных ID сообщений (защита от дублей)
+# Множество для хранения уже обработанных ID сообщений
 processed_message_ids = set()
+
+# Словарь для защиты от отправки одинаковых ответов подряд: {(chat_id, text): timestamp}
+recent_sent_messages = {}
 
 # Время последнего сообщения от владельца (Кирито) в чате: {chat_id: timestamp}
 owner_last_active = {}
@@ -43,7 +46,7 @@ def add_random_custom_emoji(text: str, fallback_char: str = "😎") -> str:
     tag = f" <tg-emoji emoji-id='{emoji_id}'>{fallback_char}</tg-emoji>"
     return text.strip() + tag
 
-# Промпты (чистые, без лишнего мусора)
+# Чистые промпты
 ELIZABETH_PROMPT_DIRECT = (
     "Ты — Элизабет.\n"
     "ПРАВИЛА:\n"
@@ -103,6 +106,14 @@ def extract_message_content(message: types.Message) -> str:
 
 async def send_smart_response(chat_id: int, bus_id: str, reply_text: str, is_direct: bool = False):
     final_text = add_random_custom_emoji(reply_text)
+    
+    # Жесткая защита от отправки одинаковых текстов чаще, чем раз в 3 секунды
+    now = time.time()
+    key = (chat_id, final_text)
+    if key in recent_sent_messages and now - recent_sent_messages[key] < 3:
+        return
+    recent_sent_messages[key] = now
+
     try:
         if is_direct:
             await bot.send_message(chat_id=chat_id, text=final_text, parse_mode="HTML")
@@ -197,7 +208,6 @@ async def handle_business_message(message: types.Message):
     bus_id = message.business_connection_id
     msg_id = message.message_id
 
-    # Защита от дублирования апдейтов от Telegram Business
     if msg_id in processed_message_ids:
         return
     processed_message_ids.add(msg_id)
