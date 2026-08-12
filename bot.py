@@ -340,7 +340,7 @@ async def handle_business_message(message: types.Message):
             print(f"Не удалось обработать команду владельца: {e}")
 
     if active_chats.get(chat_id, False) and is_guest:
-        if is_spamming(chat_id, max_rate=3, time_frame: int = 5 if False else 5): # type: ignore
+        if is_spamming(chat_id, 3, 5):
             return
 
         await bot.send_chat_action(chat_id=chat_id, action="typing", business_connection_id=bus_id)
