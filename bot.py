@@ -4,6 +4,7 @@ import random
 import re
 import time
 import datetime
+import json
 import aiohttp
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
@@ -37,11 +38,37 @@ processed_message_ids = set()
 recent_sent_messages = {}
 owner_last_active = {}
 
-# --- СТАТИСТИКА ТОКЕНОВ ЗА СЕГОДНЯ ---
+# --- СОХРАНЯЕМАЯ СТАТИСТИКА ТОКЕНОВ ЧЕРЕЗ ФАЙЛОВУЮ БАЗУ ---
+STATS_FILE = "token_stats.json"
+
+def load_stats():
+    today = datetime.date.today().isoformat()
+    if os.path.exists(STATS_FILE):
+        try:
+            with open(STATS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if data.get("date") == today:
+                    return data.get("prompt_tokens", 0), data.get("completion_tokens", 0), data.get("requests", 0)
+        except Exception as e:
+            print(f"Ошибка чтения файла статистики: {e}")
+    return 0, 0, 0
+
+def save_stats(p_tokens, c_tokens, reqs):
+    today = datetime.date.today().isoformat()
+    data = {
+        "date": today,
+        "prompt_tokens": p_tokens,
+        "completion_tokens": c_tokens,
+        "requests": reqs
+    }
+    try:
+        with open(STATS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        print(f"Ошибка сохранения статистики: {e}")
+
+today_prompt_tokens, today_completion_tokens, total_requests_today = load_stats()
 stats_date = datetime.date.today().isoformat()
-today_prompt_tokens = 0
-today_completion_tokens = 0
-total_requests_today = 0
 
 CUSTOM_EMOJI_IDS = [
     5269648280593141292,
@@ -172,6 +199,7 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
         today_prompt_tokens = 0
         today_completion_tokens = 0
         total_requests_today = 0
+        save_stats(0, 0, 0)
 
     if not GROQ_KEYS:
         return "Ошибка: Не найдены ключи GROQ_API_KEY1, GROQ_API_KEY2 и т.д."
@@ -217,6 +245,9 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
                     today_prompt_tokens += usage.get("prompt_tokens", 0)
                     today_completion_tokens += usage.get("completion_tokens", 0)
                     total_requests_today += 1
+                    
+                    # Сохраняем актуальные данные в файл
+                    save_stats(today_prompt_tokens, today_completion_tokens, total_requests_today)
 
                     reply_text = data["choices"][0]["message"]["content"]
                     history.append({"role": "assistant", "content": reply_text})
@@ -300,7 +331,7 @@ async def handle_business_message(message: types.Message):
         try:
             command_handled = True
             
-            # ОТДЕЛЬНАЯ КОМАНДА ДЛЯ ТОКЕНОВ
+            # КОМАНДА ТОКЕНОВ
             if lower_text in ["!эли токены", "!токены", "!статистика"]:
                 total_used = today_prompt_tokens + today_completion_tokens
                 limit_tokens = 8_000_000
@@ -317,7 +348,7 @@ async def handle_business_message(message: types.Message):
                 )
                 await bot.send_message(chat_id=chat_id, text=add_random_custom_emoji(tokens_msg), business_connection_id=bus_id, parse_mode="HTML")
             
-            # КОМАНДА СТАТУСА С ВСТРОЕННЫМИ ПРАВИЛАМИ
+            # КОМАНДА СТАТУСА С ПРАВИЛАМИ
             elif lower_text in ["!статус", "!эли статус"]:
                 guest_status = "🟢 Свободен (нет бана)"
                 if chat_id in blocked_guests:
