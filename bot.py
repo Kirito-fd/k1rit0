@@ -6,6 +6,7 @@ import time
 import aiohttp
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
+from aiogram.methods import DeleteBusinessMessages
 from aiohttp import web
 
 # --- НАСТРОЙКИ ПЕРЕМЕННЫХ ---
@@ -335,9 +336,13 @@ async def handle_business_message(message: types.Message):
 
             if command_handled:
                 try:
-                    await message.delete()
+                    # Корректное удаление через Telegram Business метод
+                    await bot(DeleteBusinessMessages(
+                        business_connection_id=bus_id,
+                        message_ids=[msg_id]
+                    ))
                 except Exception as e:
-                    print(f"Не удалось удалить сообщение с командой: {e}")
+                    print(f"Не удалось удалить сообщение с командой через Business API: {e}")
                 return
         except Exception as e:
             print(f"Не удалось обработать команду владельца: {e}")
@@ -378,8 +383,7 @@ async def handle_business_message(message: types.Message):
             blocked_guests[chat_id] = now_ts + 300  # 5 минут
             clean_reply = reply.replace("[БАН_5]", "").replace("[бан_5]", "").strip()
         elif "[бан_20]" in reply.lower():
-            blocked_grouped_guests = now_ts + 1200 # 20 минут
-            blocked_guests[chat_id] = now_ts + 1200
+            blocked_guests[chat_id] = now_ts + 1200 # 20 минут
             clean_reply = reply.replace("[БАН_20]", "").replace("[бан_20]", "").strip()
         elif "[бан_60]" in reply.lower():
             blocked_guests[chat_id] = now_ts + 3600 # 1 час
