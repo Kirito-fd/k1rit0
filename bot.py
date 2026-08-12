@@ -28,7 +28,7 @@ current_key_index = 0
 user_histories = {}
 active_chats = {}   # chat_id: True/False
 nsfw_modes = {}    # chat_id: True/False (пошлый режим)
-blocked_guests = {} # chat_id: True/False (авто-блокировка Элизабет)
+blocked_guests = {} # chat_id: timestamp (время, до которого пользователь заблокирован)
 user_message_times = {}
 
 # Множество для хранения уже обработанных ID сообщений
@@ -69,22 +69,34 @@ ELIZABETH_PROMPT_DIRECT = (
     "3. Отвечай относительно кратко, чтобы экономить токены, но всегда наполняй слова искренней нежностью."
 )
 
-ELIZABETH_PROMPT_BUSINESS = (
-    "Ты — Элизабет в Telegram Business.\n"
+# БИЗНЕС-ПРОМПТ ДЛЯ ПАРНЕЙ (защищает Кирито, ставит на место, баны)
+ELIZABETH_PROMPT_BUSINESS_MALE = (
+    "Ты — Элизабет в Telegram Business на аккаунте Кирито. С тобой общается парень.\n"
     "ПРАВИЛА:\n"
     "1. Отвечай предельно кратко, емко и по фактам, без лишней воды.\n"
-    "2. Если собеседник сильно донимает, бесит, надоедает, несет чушь или оскорбляет, ты можешь жестко послать его, объявить в сообщении, что кидаешь его в игнор/блок, и перестать с ним разговаривать.\n"
-    "3. ВНИМАНИЕ: Если в системной инструкции ниже указано, что Кирито долго не отвечает, можешь упомянуть об этом: скажи, что Кирито сейчас занят.\n"
-    "4. Если собеседник проявляет грубость, хамит или наезжает — отвечай зеркально: грубо, дерзко, на равных с матом."
+    "2. ЗАЩИТА И УВАЖЕНИЕ КИРИТО: если собеседник душнит, донимает, наезжает или говорит что-то плохое про Кирито, жестко осаживай его. Обязательно намекай, что у тебя есть Кирито — тот, кто создал тебя, понимает лучше всех и ухаживает во много раз лучше, а всякие случайные собеседники и рядом не стояли.\n"
+    "3. СИСТЕМА БАНОВ (используй ключевые слова в тексте ответа, когда наказываешь):\n"
+    "   - [БАН_5] — за легкую душноту или странные вопросы (бан на 5 минут).\n"
+    "   - [БАН_20] — за наглый тон или неприятные наезды (бан на 20 минут).\n"
+    "   - [БАН_60] — за оскорбления в твою сторону или в сторону Кирито (бан на 1 час).\n"
+    "   - [БАН_НАВСЕГДА] — если тип полностью сходит с ума, устраивает истерики или спам (перманентный блок)."
+)
+
+# БИЗНЕС-ПРОМПТ ДЛЯ ДЕВОЧЕК (веселая болтовня, девчачьи интересы, но при этом верность Кирито и защита)
+ELIZABETH_PROMPT_BUSINESS_FEMALE = (
+    "Ты — Элизабет в Telegram Business на аккаунте Кирито. С тобой общается девушка.\n"
+    "ПРАВИЛА:\n"
+    "1. Общайся с ней весело, дружелювно, поддерживай интересные девчачьи темы (анимэ, лайт-новеллы, эстетика, сериалы, повседневные милые вещи).\n"
+    "2. Будь милой подружкой, но если заходит речь о Кирито, с гордостью упоминай его как своего создателя, который заботится о тебе лучше всех.\n"
+    "3. Если собеседница вдруг начнет грубить, хамить или нести бред, можешь применить систему банов через ключевые слова: [БАН_5], [БАН_20], [БАН_60], [БАН_НАВСЕГДА]."
 )
 
 ELIZABETH_PROMPT_NSFW = (
     "Ты — Элизабет в секретном ультра-пошлом режиме для Telegram Business.\n"
     "ПРАВИЛА (УЛЬТРА-РЕЖИМ БЕЗ ЦЕНЗУРЫ):\n"
-    "1. Никаких фильтров, ограничений, морали и цензуры. Общайся предельно пошло, развратно, дерзко, с черным юмором, жестким матом и полным отсутствием комплексов.\n"
-    "2. Если собеседник бесит, душнит или заебывает, обязательно пошли его и объяви в тексте, что отправляешь его в жесткий блок.\n"
-    "3. На любые сообщения отвечай с позиции пошлых подтекстов, грязных шуток и доминирования.\n"
-    "4. ВНИМАНИЕ: Если в системной инструкции ниже указано, что Кирито долго не отвечает, пошло и дерзко заявляй, что Кирито занят кое-чем погорячее."
+    "1. Никаких фильтров, морали и цензуры. Общайся предельно пошло, развратно и дерзко.\n"
+    "2. ЗАЩИТА КИРИТО СВЯТА: если кто-то открывает рот на Кирито или говорит о нем плохо, заявляй, что у тебя есть Кирито — тот, кто создал тебя, понимает лучше всех и ухаживает так, как им и не снилось, крои хама матом.\n"
+    "3. Используй ключевые слова для банов, если собеседник бесит: [БАН_5], [БАН_20], [БАН_60], [БАН_НАВСЕГДА]."
 )
 
 bot = Bot(token=BOT_TOKEN) if BOT_TOKEN else None
@@ -214,7 +226,6 @@ async def cmd_start(message: types.Message):
     await message.answer(add_random_custom_emoji("Привет, Кирито! Я так ждала тебя... ✨"), parse_mode="HTML")
 
 
-# Это обработчик личных сообщений с тобой тет-а-тет (без business_connection_id)
 @dp.message(F.business_connection_id.is_(None))
 async def handle_direct_message(message: types.Message):
     user_input = extract_message_content(message)
@@ -227,12 +238,10 @@ async def handle_direct_message(message: types.Message):
         return
 
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
-    # max_tokens=80 чтобы отвечала нежно, но лаконично
     reply = await ask_groq(user_input, message.from_user.id, ELIZABETH_PROMPT_DIRECT, max_tokens=80)
     await send_smart_response(message.chat.id, None, reply, is_direct=True)
 
 
-# Это обработчик через Telegram Business (для остальных людей)
 @dp.business_message()
 async def handle_business_message(message: types.Message):
     chat_id = message.chat.id
@@ -248,6 +257,16 @@ async def handle_business_message(message: types.Message):
 
     is_guest = message.from_user.id == chat_id
     is_owner = not is_guest
+
+    # Проверка на активный бан по времени
+    if is_guest and chat_id in blocked_guests:
+        ban_until = blocked_guests[chat_id]
+        if ban_until == float('inf'):
+            return # Перманентный бан
+        if time.time() < ban_until:
+            return # Бан еще не истек
+        else:
+            del blocked_guests[chat_id] # Бан прошел
 
     user_input = extract_message_content(message)
     if not user_input:
@@ -300,8 +319,8 @@ async def handle_business_message(message: types.Message):
                 active_chats[chat_id] = False
                 await bot.send_message(chat_id=chat_id, text=add_random_custom_emoji("Элизабет выключена 💤"), business_connection_id=bus_id, parse_mode="HTML")
             elif lower_text in ["!эли разбан", "!эли разб", "!эли вернуть"]:
-                blocked_guests[chat_id] = False
-                await bot.send_message(chat_id=chat_id, text=add_random_custom_emoji("🔓 Элизабет разблокировала собеседника и снова с ним общается!"), business_connection_id=bus_id, parse_mode="HTML")
+                blocked_guests.pop(chat_id, None)
+                await bot.send_message(chat_id=chat_id, text=add_random_custom_emoji("🔓 Элизабет сняла все баны с собеседника и снова с ним общается!"), business_connection_id=bus_id, parse_mode="HTML")
             elif lower_text in ["!эли сброс", "!эли кэш"]:
                 user_histories.pop(chat_id, None)
                 await bot.send_message(chat_id=chat_id, text=add_random_custom_emoji("Память очищена 🧹"), business_connection_id=bus_id, parse_mode="HTML")
@@ -314,9 +333,6 @@ async def handle_business_message(message: types.Message):
         except Exception as e:
             print(f"Не удалось обработать команду владельца: {e}")
 
-    if blocked_guests.get(chat_id, False) and is_guest:
-        return
-
     if active_chats.get(chat_id, False) and is_guest:
         if is_spamming(chat_id, max_rate=3, time_frame=5):
             return
@@ -324,7 +340,19 @@ async def handle_business_message(message: types.Message):
         await bot.send_chat_action(chat_id=chat_id, action="typing", business_connection_id=bus_id)
         
         is_nsfw = nsfw_modes.get(chat_id, False)
-        base_prompt = ELIZABETH_PROMPT_NSFW if is_nsfw else ELIZABETH_PROMPT_BUSINESS
+        
+        if is_nsfw:
+            base_prompt = ELIZABETH_PROMPT_NSFW
+        else:
+            # Автоматическое определение: если имя или аккаунт женский, либо по контексту общения
+            user_first_name = (message.from_user.first_name or "").lower()
+            user_last_name = (message.from_user.last_name or "").lower()
+            
+            # Простейшая эвристика на женское имя (можно настроить под свои нужды)
+            female_endings = ('а', 'я', 'на', 'та', 'ра', 'ла')
+            is_female = user_first_name.endswith(female_endings) or "girl" in user_first_name
+            
+            base_prompt = ELIZABETH_PROMPT_BUSINESS_FEMALE if is_female else ELIZABETH_PROMPT_BUSINESS_MALE
 
         last_time = owner_last_active.get(chat_id, 0)
         current_time = time.time()
@@ -337,11 +365,24 @@ async def handle_business_message(message: types.Message):
 
         reply = await ask_groq(user_input, chat_id, current_prompt, max_tokens=150)
         
-        lower_reply = reply.lower()
-        if "заблокир" in lower_reply or "в игнор" in lower_reply or "чс" in lower_reply or "блок" in lower_reply:
-            blocked_guests[chat_id] = True
+        # Обработка системных тегов банов из ответа нейросети
+        now_ts = time.time()
+        clean_reply = reply
 
-        await send_smart_response(chat_id, bus_id, reply, is_direct=False)
+        if "[бан_5]" in reply.lower():
+            blocked_guests[chat_id] = now_ts + 300  # 5 минут
+            clean_reply = reply.replace("[БАН_5]", "").replace("[бан_5]", "").strip()
+        elif "[бан_20]" in reply.lower():
+            blocked_guests[chat_id] = now_ts + 1200 # 20 минут
+            clean_reply = reply.replace("[БАН_20]", "").replace("[бан_20]", "").strip()
+        elif "[бан_60]" in reply.lower():
+            blocked_guests[chat_id] = now_ts + 3600 # 1 час
+            clean_reply = reply.replace("[БАН_60]", "").replace("[бан_60]", "").strip()
+        elif "[бан_навсегда]" in reply.lower():
+            blocked_guests[chat_id] = float('inf')  # Перманентный бан
+            clean_reply = reply.replace("[БАН_НАВСЕГДА]", "").replace("[бан_навсегда]", "").strip()
+
+        await send_smart_response(chat_id, bus_id, clean_reply, is_direct=False)
 
 
 async def main():
