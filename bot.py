@@ -334,7 +334,10 @@ async def handle_business_message(message: types.Message):
                 command_handled = False
 
             if command_handled:
-                await message.delete()
+                try:
+                    await message.delete()
+                except Exception as e:
+                    print(f"Не удалось удалить сообщение с командой: {e}")
                 return
         except Exception as e:
             print(f"Не удалось обработать команду владельца: {e}")
@@ -375,7 +378,8 @@ async def handle_business_message(message: types.Message):
             blocked_guests[chat_id] = now_ts + 300  # 5 минут
             clean_reply = reply.replace("[БАН_5]", "").replace("[бан_5]", "").strip()
         elif "[бан_20]" in reply.lower():
-            blocked_guests[chat_id] = now_ts + 1200 # 20 минут
+            blocked_grouped_guests = now_ts + 1200 # 20 минут
+            blocked_guests[chat_id] = now_ts + 1200
             clean_reply = reply.replace("[БАН_20]", "").replace("[бан_20]", "").strip()
         elif "[бан_60]" in reply.lower():
             blocked_guests[chat_id] = now_ts + 3600 # 1 час
