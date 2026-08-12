@@ -324,7 +324,7 @@ async def handle_business_message(message: types.Message):
             guest_status = "🟢 Свободен"
             if chat_id in blocked_guests:
                 b_time = blocked_guests[chat_id]
-                guest_status = "🔴 Перманентный бан" if b_time == float('inf'] else f"🟡 Бан еще ~{int((b_time - time.time()) / 60)} мин."
+                guest_status = "🔴 Перманентный бан" if b_time == float('inf') else f"🟡 Бан еще ~{int((b_time - time.time()) / 60)} мин."
 
             # Запрос к нейросети на генерацию мнения об этом человеке на основе истории чата
             opinion_prompt = "Опиши кратко, едко или саркастично (в 1 предложении) свое мнение об этом собеседнике на основе вашей переписки."
@@ -401,6 +401,7 @@ async def handle_business_message(message: types.Message):
             ban_notice = "\n\n🚫 <i>[Бан на 20 минут]</i>"
             ban_duration_str = "на 20 минут"
         elif "[бан_60]" in reply.lower():
+            blocked_grades = blocked_guests
             blocked_guests[chat_id] = now_ts + 3600
             clean_reply = re.sub(r'\[бан_60\]', '', clean_reply, flags=re.IGNORECASE).strip()
             ban_notice = "\n\n🚫 <i>[Бан на 1 час]</i>"
