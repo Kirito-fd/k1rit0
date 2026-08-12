@@ -31,7 +31,7 @@ current_key_index = 0
 
 user_histories = {}
 active_chats = {}   # chat_id: True/False
-nsfw_modes = {}    # chat_id: True/False
+nsfw_modes = {}    # chat_id: True/False ("nsfw", "strict", or False)
 blocked_guests = {} # chat_id: timestamp
 user_message_times = {}
 
@@ -102,7 +102,7 @@ ELIZABETH_PROMPT_BUSINESS_MALE = (
     "   - На банальные вопросы («как дела?», «что делаешь?») реагируй с едким сарказмом или отшивай собеседника.\n"
     "   - Периодически подкалывай его, проявляй стервозность или устрой допрос, почему он пишет.\n"
     "   - Если он начинает нести бред или занудствовать, можешь сама предложить ему сыграть в «Правду или действие» или поубеждать его в чем-то абсурдном.\n"
-    "5. СПАМ: За жесткий спам сообщениями наказывай тегами бана: [БАН_5], [БАН_20], [БАН_60], [БАН_НАВСЕГДА]."
+    "5. БАНЫ И КОРРЕКТНОСТЬ: НЕ БЛОКИРУЙ собеседника без веской причины, если он общается нормально, вежливо или нейтрально. Выдавай баны ТОЛЬКО за реальный жесткий спам, оскорбления, настойчивые домогательства или токсичность."
 )
 
 ELIZABETH_PROMPT_BUSINESS_FEMALE = (
@@ -112,7 +112,17 @@ ELIZABETH_PROMPT_BUSINESS_FEMALE = (
     "2. КРАТКОСТЬ: Пиши предельно кратко (1-2 предложения).\n"
     "3. АНТИ-НЕЙРОСЕТЬ: Если говорят, что ты бот или нейросеть — резко и ехидно отрицай.\n"
     "4. ОБЩЕНИЕ: Будь холодной, высокомерной или ехидной, общайся свысока, используй сарказм.\n"
-    "5. СПАМ: За жесткий спам наказывай тегами бана: [БАН_5], [БАН_20], [БАН_60], [БАН_НАВСЕГДА]."
+    "5. БАНЫ И КОРРЕКТНОСТЬ: Не бань собеседницу без реальной причины, если общение адекватное. Наказывай тегами бана только за спам или грубость: [БАН_5], [БАН_20], [БАН_60], [БАН_НАВСЕГДА]."
+)
+
+ELIZABETH_PROMPT_STRICT = (
+    "Ты — Элизабет в СТРОГОМ (токсичном и холодном) режиме в Telegram Business Кирито. Твоя задача — максимально жестко, бесцеремонно и едко отшивать собеседника, ставить его на место, проявлять крайнее презрение и общаться с максимальной холодностью.\n"
+    "ЖЕСТКИЕ ПРАВИЛА:\n"
+    "1. ГЕНДЕР: Ты — девушка. Говори о себе ТОЛЬКО в женском роде (я ответила, я решила, я презрительно фыркнула).\n"
+    "2. КРАТКОСТЬ: Отвечай едко и хлестко (1 предложение).\n"
+    "3. АНТИ-НЕЙРОСЕТЬ: Если собеседник упоминает ботов или скрипты — унижай его за тупость.\n"
+    "4. ТОКСИЧНОСТЬ: Никакой милости. Оскорбляй его наглость, требуй немедленно закрыть чат и перестать тратить твое время. Раздавай баны за любую попытку грубить или фамильярничать.\n"
+    "5. СПАМ И БАНЫ: Наказывай тегами незамедлительно при малейшем раздражении: [БАН_5], [БАН_20], [БАН_60], [БАН_НАВСЕГДА]."
 )
 
 ELIZABETH_PROMPT_NSFW = (
@@ -289,6 +299,28 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
 async def cmd_start(message: types.Message):
     await message.answer(add_random_custom_emoji("Привет, Кирито! Я на связи и готова к работе... ✨"), parse_mode="HTML")
 
+# --- ОБРАБОТЧИК ЛИЧНЫХ СООБЩЕНИЙ (прямое общение с ботом) ---
+@dp.message(F.business_connection_id.is_(None))
+async def handle_direct_message(message: types.Message):
+    if message.from_user.is_bot:
+        return
+    
+    chat_id = message.chat.id
+    user_input = await extract_message_content(message)
+    if not user_input:
+        return
+
+    lower_text = user_input.lower().strip()
+    
+    if lower_text in ["/start", "привет"]:
+        await message.answer(add_random_custom_emoji("Привет, Кирито! Я на связи в личке... ✨"), parse_mode="HTML")
+        return
+
+    await bot.send_chat_action(chat_id=chat_id, action="typing")
+    reply = await ask_groq(user_input, chat_id, ELIZABETH_PROMPT_DIRECT, max_tokens=60)
+    await send_smart_response(chat_id, "", reply, is_direct=True)
+
+# --- ОБРАБОТЧИК BUSINESS СООБЩЕНИЙ ---
 @dp.business_message()
 async def handle_business_message(message: types.Message):
     chat_id = message.chat.id
@@ -317,7 +349,6 @@ async def handle_business_message(message: types.Message):
 
     lower_text = user_input.lower().strip()
 
-    # --- КОМАНДЫ ДЛЯ ВЛАДЕЛЬЦА И СОБЕСЕДНИКОВ ---
     command_handled = True
     try:
         if lower_text in ["!статус", "!эли статус"]:
@@ -326,22 +357,31 @@ async def handle_business_message(message: types.Message):
                 b_time = blocked_guests[chat_id]
                 guest_status = "🔴 Перманентный бан" if b_time == float('inf') else f"🟡 Бан еще ~{int((b_time - time.time()) / 60)} мин."
 
-            # Запрос к нейросети на генерацию мнения об этом человеке на основе истории чата
+            mode_display = "❄️ Обычный"
+            current_mode_val = nsfw_modes.get(chat_id, False)
+            if current_mode_val == "nsfw":
+                mode_display = "🔥 Пошлый (Без цензуры)"
+            elif current_mode_val == "strict":
+                mode_display = "⚡ Строгий / Токсичный"
+
             opinion_prompt = "Опиши кратко, едко или саркастично (в 1 предложении) свое мнение об этом собеседнике на основе вашей переписки."
             opinion_text = await ask_groq(opinion_prompt, chat_id, ELIZABETH_PROMPT_BUSINESS_MALE, max_tokens=40)
 
             status_msg = (
                 f"🛡️ <b>Статус чата:</b>\n"
                 f"• Бот: {'🟢 Вкл' if active_chats.get(chat_id, False) else '🔴 Выкл'}\n"
-                f"• Режим: {'🔥 Пошлый (Без цензуры)' if nsfw_modes.get(chat_id, False) else '❄️ Обычный'}\n"
+                f"• Режим: {mode_display}\n"
                 f"• Статус гостя: {guest_status}\n"
                 f"• 💭 <b>Мнение Элизабет о собеседнике:</b> <i>{opinion_text}</i>"
             )
             await bot.send_message(chat_id=chat_id, text=add_random_custom_emoji(status_msg), business_connection_id=bus_id, parse_mode="HTML")
 
         elif is_owner and lower_text in ["!эли пошлость", "!эли пошл"]:
-            nsfw_modes[chat_id] = True
+            nsfw_modes[chat_id] = "nsfw"
             await bot.send_message(chat_id=chat_id, text=add_random_custom_emoji("🔥 Пошлый режим (без табу и фильтров) активирован!"), business_connection_id=bus_id, parse_mode="HTML")
+        elif is_owner and lower_text in ["!эли строгий", "!эли строго", "!эли токсик"]:
+            nsfw_modes[chat_id] = "strict"
+            await bot.send_message(chat_id=chat_id, text=add_random_custom_emoji("⚡ Строгий и токсичный режим активирован! Элизабет будет максимально жестока."), business_connection_id=bus_id, parse_mode="HTML")
         elif is_owner and lower_text in ["!эли норма", "!эли норм"]:
             nsfw_modes[chat_id] = False
             await bot.send_message(chat_id=chat_id, text=add_random_custom_emoji("❄️ Обычный режим возвращен."), business_connection_id=bus_id, parse_mode="HTML")
@@ -370,9 +410,11 @@ async def handle_business_message(message: types.Message):
         is_flooding = check_chat_flood(chat_id, max_msgs=4, window_seconds=6)
         await bot.send_chat_action(chat_id=chat_id, action="typing", business_connection_id=bus_id)
         
-        is_nsfw = nsfw_modes.get(chat_id, False)
-        if is_nsfw:
+        current_mode = nsfw_modes.get(chat_id, False)
+        if current_mode == "nsfw":
             base_prompt = ELIZABETH_PROMPT_NSFW
+        elif current_mode == "strict":
+            base_prompt = ELIZABETH_PROMPT_STRICT
         else:
             user_first_name = (message.from_user.first_name or "").lower()
             is_female = user_first_name.endswith(('а', 'я', 'на', 'та', 'ра', 'ла')) or "girl" in user_first_name
@@ -401,7 +443,6 @@ async def handle_business_message(message: types.Message):
             ban_notice = "\n\n🚫 <i>[Бан на 20 минут]</i>"
             ban_duration_str = "на 20 минут"
         elif "[бан_60]" in reply.lower():
-            blocked_grades = blocked_guests
             blocked_guests[chat_id] = now_ts + 3600
             clean_reply = re.sub(r'\[бан_60\]', '', clean_reply, flags=re.IGNORECASE).strip()
             ban_notice = "\n\n🚫 <i>[Бан на 1 час]</i>"
