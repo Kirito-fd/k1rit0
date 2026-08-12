@@ -15,7 +15,7 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 GROQ_KEYS = []
 i = 1
 while True:
-    key = os.getenv(f"GROQ_KEY{i}")
+    key = os.getenv(f"GROQ_API_KEY{i}")
     if key:
         GROQ_KEYS.append(key)
         i += 1
@@ -123,7 +123,6 @@ def extract_message_content(message: types.Message) -> str:
 async def send_smart_response(chat_id: int, bus_id: str, reply_text: str, is_direct: bool = False):
     final_text = add_random_custom_emoji(reply_text)
     
-    # Жесткая защита от отправки одинаковых текстов чаще, чем раз в 3 секунды
     now = time.time()
     key = (chat_id, final_text)
     if key in recent_sent_messages and now - recent_sent_messages[key] < 3:
@@ -161,7 +160,7 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
     global current_key_index
     
     if not GROQ_KEYS:
-        return "Ошибка: Не найдены ключи GROQ_KEY1, GROQ_KEY2 и т.д."
+        return "Ошибка: Не найдены ключи GROQ_API_KEY1, GROQ_API_KEY2 и т.д."
 
     url = "https://api.groq.com/openai/v1/chat/completions"
 
@@ -311,7 +310,6 @@ async def handle_business_message(message: types.Message):
         except Exception as e:
             print(f"Не удалось обработать команду владельца: {e}")
 
-    # Если собеседник "заблокирован" ботом, она полностью игнорирует его сообщения
     if blocked_guests.get(chat_id, False) and is_guest:
         return
 
@@ -322,7 +320,7 @@ async def handle_business_message(message: types.Message):
         await bot.send_chat_action(chat_id=chat_id, action="typing", business_connection_id=bus_id)
         
         is_nsfw = nsfw_modes.get(chat_id, False)
-        base_prompt = ELIZABETH_PROMPT_NSFW if is_nsfw else ELIZABET_PROMPT_BUSINESS
+        base_prompt = ELIZABETH_PROMPT_NSFW if is_nsfw else ELIZABETH_PROMPT_BUSINESS
 
         last_time = owner_last_active.get(chat_id, 0)
         current_time = time.time()
@@ -335,7 +333,6 @@ async def handle_business_message(message: types.Message):
 
         reply = await ask_groq(user_input, chat_id, current_prompt, max_tokens=150)
         
-        # Проверяем, решила ли модель заблокировать собеседника в своем ответе
         lower_reply = reply.lower()
         if "заблокир" in lower_reply or "в игнор" in lower_reply or "чс" in lower_reply or "блок" in lower_reply:
             blocked_guests[chat_id] = True
