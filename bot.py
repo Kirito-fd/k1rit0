@@ -33,6 +33,7 @@ user_histories = {}
 active_chats = {}   # chat_id: True/False
 nsfw_modes = {}    # chat_id: True/False ("nsfw", "strict", or False)
 blocked_guests = {} # chat_id: timestamp
+muted_chats = set() # chat_id: set для жесткого мута (как на видео)
 user_message_times = {}
 
 processed_message_ids = set()
@@ -336,6 +337,16 @@ async def handle_business_message(message: types.Message):
     is_guest = message.from_user.id == chat_id
     is_owner = not is_guest
 
+    # Если включен жесткий мут гостя (как на видео) — стираем его сообщения мгновенно
+    if is_guest and chat_id in muted_chats:
+        try:
+            await bot(DeleteBusinessMessages(business_connection_id=bus_id, message_ids=[msg_id]))
+            # Раз в несколько сообщений можно отправлять заглушку, чтобы не спамить в чат слишком часто
+            return
+        except Exception as e:
+            print(f"Ошибка удаления сообщения в муте: {e}")
+        return
+
     if is_guest and chat_id in blocked_guests:
         ban_until = blocked_guests[chat_id]
         if ban_until == float('inf') or time.time() < ban_until:
@@ -353,7 +364,9 @@ async def handle_business_message(message: types.Message):
     try:
         if lower_text in ["!статус", "!эли статус"]:
             guest_status = "🟢 Свободен"
-            if chat_id in blocked_guests:
+            if chat_id in muted_chats:
+                guest_status = "🔇 В жестком муте (заглушен)"
+            elif chat_id in blocked_guests:
                 b_time = blocked_guests[chat_id]
                 guest_status = "🔴 Перманентный бан" if b_time == float('inf') else f"🟡 Бан еще ~{int((b_time - time.time()) / 60)} мин."
 
@@ -376,6 +389,12 @@ async def handle_business_message(message: types.Message):
             )
             await bot.send_message(chat_id=chat_id, text=add_random_custom_emoji(status_msg), business_connection_id=bus_id, parse_mode="HTML")
 
+        elif is_owner and lower_text in ["!мут", "!эли мут"]:
+            muted_chats.add(chat_id)
+            await bot.send_message(chat_id=chat_id, text=add_random_custom_emoji("❌ Вы больше не можете писать."), business_connection_id=bus_id, parse_mode="HTML")
+        elif is_owner and lower_text in ["!анмут", "!эли анмут", "!эли размут"]:
+            muted_chats.discard(chat_id)
+            await bot.send_message(chat_id=chat_id, text=add_random_custom_emoji("🔊 Мут снят, собеседник снова может писать."), business_connection_id=bus_id, parse_mode="HTML")
         elif is_owner and lower_text in ["!эли пошлость", "!эли пошл"]:
             nsfw_modes[chat_id] = "nsfw"
             await bot.send_message(chat_id=chat_id, text=add_random_custom_emoji("🔥 Пошлый режим (без табу и фильтров) активирован!"), business_connection_id=bus_id, parse_mode="HTML")
@@ -393,7 +412,8 @@ async def handle_business_message(message: types.Message):
             await bot.send_message(chat_id=chat_id, text=add_random_custom_emoji("Элизабет выключена 💤"), business_connection_id=bus_id, parse_mode="HTML")
         elif is_owner and lower_text in ["!эли разбан", "!эли разб"]:
             blocked_guests.pop(chat_id, None)
-            await bot.send_message(chat_id=chat_id, text=add_random_custom_emoji("🔓 Баны сняты!"), business_connection_id=bus_id, parse_mode="HTML")
+            muted_chats.discard(chat_id)
+            await bot.send_message(chat_id=chat_id, text=add_random_custom_emoji("🔓 Баны и муты сняты!"), business_connection_id=bus_id, parse_mode="HTML")
         elif is_owner and lower_text in ["!эли сброс", "!эли кэш"]:
             user_histories.pop(chat_id, None)
             await bot.send_message(chat_id=chat_id, text=add_random_custom_emoji("Память очищена 🧹"), business_connection_id=bus_id, parse_mode="HTML")
