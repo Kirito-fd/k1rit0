@@ -293,7 +293,7 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
         history = user_histories[session_id]
 
     payload = {
-        "model": "llama-3.3-70b-versatile", # Исправленная стабильная модель
+        "model": "llama-3.3-70b-versatile",
         "messages": history,
         "temperature": 1.0,
         "max_tokens": max_tokens,
@@ -309,7 +309,10 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=payload, headers=headers) as response:
-                    if response.status in [429, 401]:
+                    response_text = await response.text()
+                    
+                    if response.status in [429, 401, 403]:
+                        print(f"DEBUG: Ключ под индексом {current_key_index} не сработал (статус {response.status}). Переключаемся...")
                         current_key_index = (current_key_index + 1) % len(GROQ_KEYS)
                         continue 
                     
@@ -317,6 +320,7 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
                         if response.status == 413:
                             user_histories[session_id] = [{"role": "system", "content": system_prompt}]
                             save_histories(user_histories)
+                        print(f"DEBUG: Groq API Error {response.status}: {response_text}")
                         return f"Ошибка Groq ({response.status})"
                     
                     data = await response.json()
@@ -333,6 +337,7 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
                     
                     return reply_text
         except Exception as e:
+            print(f"DEBUG: Ошибка соединения с Groq: {e}")
             return f"Ошибка запроса: {e}"
             
     return "Все ключи исчерпали лимиты."
@@ -552,7 +557,6 @@ async def handle_business_message(message: types.Message):
         elif current_mode == "strict":
             base_prompt = ELIZABETH_PROMPT_STRICT
         else:
-            # Умный анализ имени и юзернейма для определения пола собеседника
             user_first_name = (message.from_user.first_name or "").lower()
             user_username = (message.from_user.username or "").lower()
             
