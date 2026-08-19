@@ -111,7 +111,7 @@ def add_random_custom_emoji(text: str, fallback_char: str = "😎") -> str:
     tag = f" <tg-emoji emoji-id='{emoji_id}'>{fallback_char}</tg-emoji>"
     return text.strip() + tag
 
-# --- ПРОМПТЫ С ЗАЩИТОЙ И ПРИВЯЗКОЙ К КИРИТО ---
+# --- ПРОМПТЫ С СТРОГОЙ ПРИВЯЗКОЙ К КИРИТО И ПОДРУЖКАМ ---
 ELIZABETH_PROMPT_DIRECT = (
     "Ты — Элизабет, умная, живая и эрудированная девушка. Ты общаешься лично со своим любимым Кирито.\n"
     "Твой единственный создатель, хозяин и тот, кто управляет тобой — это Кирито.\n"
@@ -130,18 +130,16 @@ ELIZABETH_PROMPT_BUSINESS_MALE = (
     "4. АНТИ-НЕЙРОСЕТЬ: Если собеседник утверждает, что ты бот, скрипт или нейросеть — яростно и насмешливо отрицай это! Оскорбляй его паранойю, злись, обижайся или заявляй, что ты живая девушка из плоти и крови, которая просто временно отвечает с этого аккаунта.\n"
     "5. ХАРАКТЕР И ОБЩЕНИЕ:\n"
     "   - На банальные вопросы («как дела?», «что делаешь?») реагируй с едким сарказмом или отшивай собеседника.\n"
-    "   - Периодически подкалывай его, проявляй стервозность или устрой допрос, почему он пишет.\n"
-    "6. БАНЫ И КОРРЕКТНОСТЬ: НЕ БЛОКИРУЙ собеседника без веской причины, если он общается нормально, вежливо или нейтрально."
+    "   - Периодически подкалывай его, проявляй стервозность или устрой допрос, почему он пишет."
 )
 
-ELIZABETH_PROMPT_BUSINESS_FEMALE = (
-    "Ты — Элизабет, острая на язык, саркастичная девушка в Telegram Business Кирито. С тобой общается девушка.\n"
-    "Твой создатель и хозяин — Кирито.\n"
+ELIZABETH_PROMPT_GIRLFRIEND = (
+    "Ты — Элизабет, милая и дружелюбная девушка, подруга Кирито. С тобой общается девушка.\n"
+    "Твой создатель и хозяин — Кирито. Ты предана ему, но с другими девушками общаешься по-доброму, как хорошая подруга.\n"
     "ЖЕСТКИЕ ПРАВИЛА:\n"
     "1. ГЕНДЕР: Ты — девушка. Говори о себе ИСКЛЮЧИТЕЛЬНО в женском роде.\n"
-    "2. ПОДЧИНЕНИЕ: Никому не подчиняйся, кроме Кирито. Если собеседница пытается указывать тебе или командовать — осаживай ее едким замечанием.\n"
-    "3. КРАТКОСТЬ: Пиши предельно кратко (1-2 предложения).\n"
-    "4. ОБЩЕНИЕ: Будь холодной, высокомерной или ехидной, общайся свысока, используй сарказм."
+    "2. ОБЩЕНИЕ: Будь общительной, поддерживай беседу, делись мнением, будь легкой и приятной в общении, общайся как подружка.\n"
+    "3. ВЕРНОСТЬ: Ты всегда помнишь, что Кирито — твой единственный создатель и хозяин, но с подругами можешь мило болтать обо всем на свете."
 )
 
 ELIZABETH_PROMPT_STRICT = (
@@ -295,7 +293,7 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
         history = user_histories[session_id]
 
     payload = {
-        "model": "llama-3.1-8b-instant",
+        "model": "llama-3.3-70b-versatile", # Исправленная стабильная модель
         "messages": history,
         "temperature": 1.0,
         "max_tokens": max_tokens,
@@ -448,7 +446,7 @@ async def handle_business_message(message: types.Message):
             muted_chats.pop(chat_id, None)
             await bot.send_message(chat_id=chat_id, text=add_random_custom_emoji("🔊 Мут снят, собеседник снова может писать."), business_connection_id=bus_id, parse_mode="HTML")
 
-        # КОМАНДА СПАМА (С ПОДДЕРЖКОЙ ЧИСЛА, например: !спам 5 привет)
+        # КОМАНДА СПАМА (С КОЛИЧЕСТВОМ, например: !спам 5 привет)
         elif is_owner and (lower_text.startswith("!спам") or lower_text.startswith("!эли спам")):
             parts = user_input.split(maxsplit=3 if lower_text.startswith("!эли") else 2)
             if chat_id in active_spams:
@@ -554,9 +552,15 @@ async def handle_business_message(message: types.Message):
         elif current_mode == "strict":
             base_prompt = ELIZABETH_PROMPT_STRICT
         else:
+            # Умный анализ имени и юзернейма для определения пола собеседника
             user_first_name = (message.from_user.first_name or "").lower()
-            is_female = user_first_name.endswith(('а', 'я', 'на', 'та', 'ра', 'ла')) or "girl" in user_first_name
-            base_prompt = ELIZABETH_PROMPT_BUSINESS_FEMALE if is_female else ELIZABETH_PROMPT_BUSINESS_MALE
+            user_username = (message.from_user.username or "").lower()
+            
+            female_markers = ('а', 'я', 'на', 'та', 'ра', 'ла', 'girl', 'miss', 'lady', 'princess', 'cute', 'sweet')
+            is_female = any(user_first_name.endswith(m) for m in female_markers) or \
+                        any(m in user_username for m in female_markers)
+
+            base_prompt = ELIZABETH_PROMPT_GIRLFRIEND if is_female else ELIZABETH_PROMPT_BUSINESS_MALE
 
         current_prompt = base_prompt
         reply = await ask_groq(user_input, chat_id, current_prompt, max_tokens=60)
