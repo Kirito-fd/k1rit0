@@ -213,14 +213,17 @@ async def extract_message_content(message: types.Message) -> str:
             os.remove(local_path)
         return transcribed
     if message.sticker:
-        return f"[Стикер с эмодзи: {message.sticker.emoji or '😊'}]"
+        return "Собеседник отправил стикер. Отреагируй на него с юмором или сарказмом."
     if message.photo:
-        return "[Пользователь отправил фото]"
+        return "Собеседник отправил картинку/фото. Прокомментируй это."
     if message.video:
-        return "[Пользователь отправил видео]"
-    return ""
+        return "Собеседник отправил видео."
+    return "Собеседник отправил сообщение."
 
 async def send_smart_response(chat_id: int, bus_id: str, reply_text: str, is_direct: bool = False):
+    if not reply_text.strip():
+        reply_text = "Хм... И что это должно значить? 😉"
+    
     final_text = add_random_custom_emoji(reply_text)
     now = time.time()
     key = (chat_id, final_text)
@@ -295,7 +298,7 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
         try:
             client = get_groq_client()
             completion = client.chat.completions.create(
-                model="openai/gpt-oss-20b",
+                model="llama-3.1-8b-instant",
                 messages=history,
                 temperature=1.0,
                 max_tokens=max_tokens,
@@ -308,11 +311,11 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
                 total_requests_today += 1
                 save_stats(today_prompt_tokens, today_completion_tokens, total_requests_today)
 
-            reply_text = completion.choices[0].message.content
+            reply_text = completion.choices[0].message.content or ""
             history.append({"role": "assistant", "content": reply_text})
             save_histories(user_histories)
             
-            return reply_text
+            return reply_text.strip()
             
         except APIError as e:
             if e.status_code in [429, 401, 403]:
@@ -429,7 +432,7 @@ async def handle_business_message(message: types.Message):
                 notice_text = f"❌ Вы больше не можете писать. (Мут на {duration_minutes} мин.)"
             else:
                 muted_chats[chat_id] = float('inf')
-                notice_text = "❌ Вы больше не можете писать. (Мут навсегда)"
+                notice_text = f"❌ Вы больше не можете писать. (Мут навсегда)"
 
             await bot.send_message(chat_id=chat_id, text=add_random_custom_emoji(notice_text), business_connection_id=bus_id, parse_mode="HTML")
 
@@ -553,3 +556,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
