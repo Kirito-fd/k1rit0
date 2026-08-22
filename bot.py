@@ -298,7 +298,8 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
         try:
             client = get_groq_client()
             completion = client.chat.completions.create(
-                model="llama3-8b-8192",
+                # ИСПОЛЬЗУЕМ MIXTRAL (МЕНЬШЕ ЦЕНЗУРЫ, РЕДКО ПАДАЕТ)
+                model="mixtral-8x7b-32768",
                 messages=history,
                 temperature=1.0,
                 max_tokens=max_tokens,
@@ -324,13 +325,14 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
                 
             print(f"Groq API Error {e.status_code}: {e.message}")
             
-            # АВТОМАТИЧЕСКИЙ СБРОС КЭША ПРИ ОШИБКАХ 400 и 413
-            if e.status_code in [400, 413]:
+            if e.status_code in [400, 413, 404]:
                 user_histories[session_id] = [{"role": "system", "content": system_prompt}]
                 save_histories(user_histories)
-                return "Моя память слегка сбоила, пришлось очистить кэш диалога! Повтори, пожалуйста. 🔄"
+                # ТЕПЕРЬ ОНА БУДЕТ ВЫВОДИТЬ РЕАЛЬНУЮ ПРИЧИНУ ОШИБКИ В ЧАТ!
+                err_msg = str(e.message).replace('"', "'")
+                return f"Сбой API ({e.status_code}). Подробности: {err_msg}"
                 
-            return f"Ошибка Groq ({e.status_code})"
+            return f"Ошибка Groq ({e.status_code}): {e.message}"
         except Exception as e:
             print(f"Исключение при запросе к Groq: {e}")
             return f"Ошибка запроса: {e}"
@@ -561,4 +563,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
