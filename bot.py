@@ -5,6 +5,7 @@ import time
 import datetime
 import json
 import aiohttp
+from groq import Groq, APIError
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.methods import DeleteBusinessMessages
@@ -30,6 +31,11 @@ if single_key and single_key.strip() not in GROQ_KEYS:
 
 print(f"Успешно загружено ключей Groq: {len(GROQ_KEYS)}")
 current_key_index = 0
+
+def get_groq_client():
+    if not GROQ_KEYS:
+        return None
+    return Groq(api_key=GROQ_KEYS[current_key_index])
 
 active_chats = {}   
 nsfw_modes = {}    
@@ -168,25 +174,28 @@ def check_chat_flood(chat_id: int, max_msgs: int = 4, window_seconds: int = 6) -
     return len(user_message_times[chat_id]) > max_msgs
 
 async def transcribe_audio_with_groq(audio_file_path: str) -> str:
+    global current_key_index
     if not GROQ_KEYS:
         return "[Голосовое сообщение]"
-    url = "https://api.groq.com/openai/v1/audio/transcriptions"
-    current_key = GROQ_KEYS[current_key_index]
-    headers = {"Authorization": f"Bearer {current_key}"}
     
-    try:
-        async with aiohttp.ClientSession() as session:
-            with open(audio_file_path, "rb") as f:
-                data = aiohttp.FormData()
-                data.add_field('file', f, filename='audio.ogg', content_type='audio/ogg')
-                data.add_field('model', 'whisper-large-v3')
-                async with session.post(url, data=data, headers=headers) as resp:
-                    if resp.status == 200:
-                        res_json = await resp.json()
-                        text = res_json.get("text", "")
-                        return f"[Собеседник отправил аудио: {text}]"
-    except Exception as e:
-        print(f"Ошибка распознавания аудио: {e}")
+    for _ in range(len(GROQ_KEYS)):
+        try:
+            client = get_groq_client()
+            with open(audio_file_path, "rb") as file_to_read:
+                transcription = client.audio.transcriptions.create(
+                    file=(audio_file_path, file_to_read.read()),
+                    model="whisper-large-v3",
+                )
+                return f"[Собеседник отправил аудио: {transcription.text}]"
+        except APIError as e:
+            if e.status_code in [429, 401, 403]:
+                current_key_index = (current_key_index + 1) % len(GROQ_KEYS)
+                continue
+            print(f"Ошибка транскрипции Groq API: {e}")
+            break
+        except Exception as e:
+            print(f"Ошибка распознавания аудио: {e}")
+            break
     return "[Пользователь отправил голосовое сообщение]"
 
 async def extract_message_content(message: types.Message) -> str:
@@ -270,8 +279,6 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
     if not GROQ_KEYS:
         return "Ошибка: Не найдены ключи Groq."
 
-    url = "https://api.groq.com/openai/v1/chat/completions"
-
     if session_id not in user_histories:
         user_histories[session_id] = [{"role": "system", "content": system_prompt}]
     else:
@@ -284,47 +291,38 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
         user_histories[session_id] = [history[0]] + history[-13:]
         history = user_histories[session_id]
 
-    payload = {
-        "model": "llama-3.1-8b-instant",
-        "messages": history,
-        "temperature": 1.0,
-        "max_tokens": max_tokens,
-    }
-
     for _ in range(len(GROQ_KEYS)):
-        current_key = GROQ_KEYS[current_key_index]
-        headers = {
-            "Authorization": f"Bearer {current_key}",
-            "Content-Type": "application/json",
-        }
-
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload, headers=headers) as response:
-                    if response.status in [429, 401, 403]:
-                        current_key_index = (current_key_index + 1) % len(GROQ_KEYS)
-                        continue 
-                    
-                    if response.status != 200:
-                        resp_text = await response.text()
-                        print(f"Groq API Error {response.status}: {resp_text}")
-                        if response.status == 413:
-                            user_histories[session_id] = [{"role": "system", "content": system_prompt}]
-                            save_histories(user_histories)
-                        return f"Ошибка Groq ({response.status})"
-                    
-                    data = await response.json()
-                    usage = data.get("usage", {})
-                    today_prompt_tokens += usage.get("prompt_tokens", 0)
-                    today_completion_tokens += usage.get("completion_tokens", 0)
-                    total_requests_today += 1
-                    save_stats(today_prompt_tokens, today_completion_tokens, total_requests_today)
+            client = get_groq_client()
+            completion = client.chat.completions.create(
+                model="llama-3.1-8b-instant",
+                messages=history,
+                temperature=1.0,
+                max_tokens=max_tokens,
+            )
+            
+            usage = completion.usage
+            if usage:
+                today_prompt_tokens += usage.prompt_tokens
+                today_completion_tokens += usage.completion_tokens
+                total_requests_today += 1
+                save_stats(today_prompt_tokens, today_completion_tokens, total_requests_today)
 
-                    reply_text = data["choices"][0]["message"]["content"]
-                    history.append({"role": "assistant", "content": reply_text})
-                    save_histories(user_histories)
-                    
-                    return reply_text
+            reply_text = completion.choices[0].message.content
+            history.append({"role": "assistant", "content": reply_text})
+            save_histories(user_histories)
+            
+            return reply_text
+            
+        except APIError as e:
+            if e.status_code in [429, 401, 403]:
+                current_key_index = (current_key_index + 1) % len(GROQ_KEYS)
+                continue
+            print(f"Groq API Error {e.status_code}: {e.message}")
+            if e.status_code == 413:
+                user_histories[session_id] = [{"role": "system", "content": system_prompt}]
+                save_histories(user_histories)
+            return f"Ошибка Groq ({e.status_code})"
         except Exception as e:
             print(f"Исключение при запросе к Groq: {e}")
             return f"Ошибка запроса: {e}"
@@ -550,7 +548,7 @@ async def main():
     await start_web_server()
     asyncio.create_task(cleaner_background_task())
     await bot.delete_webhook(drop_pending_updates=True)
-    print("Бот запущен со всеми функциями!")
+    print("Бот запущен со всеми функциями через официальный Groq SDK!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
