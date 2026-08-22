@@ -298,7 +298,7 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
         try:
             client = get_groq_client()
             completion = client.chat.completions.create(
-                model="llama-3.1-8b-instant",
+                model="openai/gpt-oss-20b",
                 messages=history,
                 temperature=1.0,
                 max_tokens=max_tokens,
@@ -556,4 +556,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
