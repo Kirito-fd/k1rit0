@@ -286,7 +286,7 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
         history = user_histories[session_id]
 
     payload = {
-        "model": "llama-3.3-70b-versatile",
+        "model": "llama-3.1-8b-instant",  # Актуальная модель Groq
         "messages": history,
         "temperature": 1.0,
         "max_tokens": max_tokens,
