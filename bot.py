@@ -24,7 +24,6 @@ while True:
     else:
         break
 
-# Запасной вариант на случай, если указан просто GROQ_API_KEY
 single_key = os.getenv("GROQ_API_KEY")
 if single_key and single_key.strip() not in GROQ_KEYS:
     GROQ_KEYS.append(single_key.strip())
@@ -32,11 +31,11 @@ if single_key and single_key.strip() not in GROQ_KEYS:
 print(f"Успешно загружено ключей Groq: {len(GROQ_KEYS)}")
 current_key_index = 0
 
-active_chats = {}   # chat_id: True/False
-nsfw_modes = {}    # chat_id: True/False ("nsfw", "strict", or False)
-blocked_guests = {} # chat_id: timestamp
-muted_chats = {}    # chat_id: timestamp
-active_spams = {}   # chat_id: asyncio.Task
+active_chats = {}   
+nsfw_modes = {}    
+blocked_guests = {} 
+muted_chats = {}    
+active_spams = {}   
 user_message_times = {}
 
 processed_message_ids = set()
@@ -257,6 +256,27 @@ async def start_web_server():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
+async def get_working_model(session: aiohttp.ClientSession, headers: dict) -> str:
+    """Динамически забирает список доступных моделей с Groq API"""
+    try:
+        async with session.get("https://api.groq.com/openai/v1/models", headers=headers) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                models = [m["id"] for m in data.get("data", [])]
+                # Сначала ищем быструю или универсальную llama
+                for pref in ["llama-3.1-8b-instant", "llama-3.3-70b-versatile", "llama3-8b-8192", "llama3-70b-8192"]:
+                    if pref in models:
+                        return pref
+                # Если ничего из предпочтений нет, берем первую доступную текстовую модель
+                for m in models:
+                    if "whisper" not in m:
+                        return m
+    except Exception as e:
+        print(f"Ошибка получения списка моделей: {e}")
+    
+    # Запасной вариант по умолчанию
+    return "llama-3.1-8b-instant"
+
 async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens: int = 60) -> str:
     global current_key_index, today_prompt_tokens, today_completion_tokens, total_requests_today, stats_date
     
@@ -285,13 +305,6 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
         user_histories[session_id] = [history[0]] + history[-13:]
         history = user_histories[session_id]
 
-    payload = {
-        "model": "llama-3.1-8b-instant",  # Актуальная модель Groq
-        "messages": history,
-        "temperature": 1.0,
-        "max_tokens": max_tokens,
-    }
-
     for _ in range(len(GROQ_KEYS)):
         current_key = GROQ_KEYS[current_key_index]
         headers = {
@@ -301,14 +314,24 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
 
         try:
             async with aiohttp.ClientSession() as session:
+                # Автоматически находим рабочую модель под ключ
+                model_name = await get_working_model(session, headers)
+
+                payload = {
+                    "model": model_name,
+                    "messages": history,
+                    "temperature": 1.0,
+                    "max_tokens": max_tokens,
+                }
+
                 async with session.post(url, json=payload, headers=headers) as response:
-                    response_text = await response.text()
-                    
                     if response.status in [429, 401, 403]:
                         current_key_index = (current_key_index + 1) % len(GROQ_KEYS)
                         continue 
                     
                     if response.status != 200:
+                        resp_text = await response.text()
+                        print(f"Groq API Error {response.status}: {resp_text}")
                         if response.status == 413:
                             user_histories[session_id] = [{"role": "system", "content": system_prompt}]
                             save_histories(user_histories)
@@ -327,6 +350,7 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
                     
                     return reply_text
         except Exception as e:
+            print(f"Исключение при запросе к Groq: {e}")
             return f"Ошибка запроса: {e}"
             
     return "Все ключи исчерпали лимиты."
