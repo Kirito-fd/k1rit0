@@ -321,10 +321,15 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
             if e.status_code in [429, 401, 403]:
                 current_key_index = (current_key_index + 1) % len(GROQ_KEYS)
                 continue
+                
             print(f"Groq API Error {e.status_code}: {e.message}")
-            if e.status_code == 413:
+            
+            # АВТОМАТИЧЕСКИЙ СБРОС КЭША ПРИ ОШИБКАХ 400 и 413
+            if e.status_code in [400, 413]:
                 user_histories[session_id] = [{"role": "system", "content": system_prompt}]
                 save_histories(user_histories)
+                return "Моя память слегка сбоила, пришлось очистить кэш диалога! Повтори, пожалуйста. 🔄"
+                
             return f"Ошибка Groq ({e.status_code})"
         except Exception as e:
             print(f"Исключение при запросе к Groq: {e}")
@@ -556,3 +561,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
