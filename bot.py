@@ -10,7 +10,7 @@ from groq import Groq, APIError
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.methods import DeleteBusinessMessages
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiohttp import web
 
 # --- НАСТРОЙКИ ПЕРЕМЕННЫХ ---
@@ -159,7 +159,7 @@ def add_random_custom_emoji(text: str, fallback_char: str = "✨") -> str:
 # --- ЗАЩИТА ОТ МЫСЛЕЙ ВСЛУХ И СТАНДАРТНЫХ СМАЙЛОВ ---
 STRICT_NO_COT = (
     "\nГЛАВНОЕ ПРАВИЛО: Пиши ИСКЛЮЧИТЕЛЬНО прямой ответ от лица Элизабет. "
-    "СТРОГО ЗАПРЕЩЕНО выводить блок <think> или размышления. "
+    "НЕ ИСПОЛЬЗУЙ тег <think> и не выводи свои размышления! Сразу отвечай на сообщение. "
     "СТРОГО ЗАПРЕЩЕНО использовать любые обычные эмодзи и смайлы в тексте!"
 )
 
@@ -284,7 +284,6 @@ async def send_smart_response(chat_id: int, bus_id: str, reply_text: str, is_dir
     recent_sent_messages[key] = now
 
     try:
-        # Если есть WebApp-кнопка, всегда отправляем как обычное сообщение для корректной работы
         if is_direct or reply_markup:
             await bot.send_message(chat_id=chat_id, text=final_text, parse_mode="HTML", reply_markup=reply_markup)
         else:
@@ -318,7 +317,7 @@ async def start_web_server():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens: int = 150) -> str:
+async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens: int = 500) -> str:
     global current_key_index, today_prompt_tokens, today_completion_tokens, total_requests_today, stats_date
     
     current_date = datetime.date.today().isoformat()
@@ -423,7 +422,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
                 [
                     InlineKeyboardButton(
                         text="🐹 Играть в кликер", 
-                        web_app=WebAppInfo(url=GAME_URL)
+                        url=GAME_URL
                     )
                 ]
             ]
@@ -563,7 +562,7 @@ async def handle_direct_message(message: types.Message):
             return
 
     await bot.send_chat_action(chat_id=chat_id, action="typing")
-    reply = await ask_groq(user_input, chat_id, ELIZABETH_PROMPT_DIRECT, max_tokens=150)
+    reply = await ask_groq(user_input, chat_id, ELIZABETH_PROMPT_DIRECT, max_tokens=500)
     await send_smart_response(chat_id, "", reply, is_direct=True)
 
 @dp.business_message()
@@ -630,7 +629,7 @@ async def handle_business_message(message: types.Message):
         is_female = any(user_first_name.endswith(m) for m in female_markers) or any(m in user_username for m in female_markers)
         base_prompt = ELIZABETH_PROMPT_GIRLFRIEND if is_female else ELIZABETH_PROMPT_BUSINESS_MALE
 
-    reply = await ask_groq(user_input, chat_id, base_prompt, max_tokens=150)
+    reply = await ask_groq(user_input, chat_id, base_prompt, max_tokens=500)
     await send_smart_response(chat_id, bus_id, reply, is_direct=False)
 
 async def main():
