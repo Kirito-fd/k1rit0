@@ -159,8 +159,8 @@ def add_random_custom_emoji(text: str, fallback_char: str = "✨") -> str:
 # --- ЗАЩИТА ОТ МЫСЛЕЙ ВСЛУХ И СТАНДАРТНЫХ СМАЙЛОВ ---
 STRICT_NO_COT = (
     "\nГЛАВНОЕ ПРАВИЛО: Пиши ИСКЛЮЧИТЕЛЬНО прямой ответ от лица Элизабет. "
-    "СТРОГО ЗАПРЕЩЕНО использовать любые обычные эмодзи и смайлы (😊, 💕, 🌸, 😁 и т.д.) в тексте! "
-    "СТРОГО ЗАПРЕЩЕНО выводить рассуждения, структуру и заголовки. Пиши только чистый текст без смайликов!"
+    "СТРОГО ЗАПРЕЩЕНО выводить блок <think> или размышления. "
+    "СТРОГО ЗАПРЕЩЕНО использовать любые обычные эмодзи и смайлы в тексте!"
 )
 
 # --- ПРОМПТЫ ---
@@ -206,13 +206,17 @@ ELIZABETH_PROMPT_NSFW = (
 bot = Bot(token=BOT_TOKEN) if BOT_TOKEN else None
 dp = Dispatcher()
 
+# --- ФИЛЬТР УДАЛЕНИЯ МЫСЛЕЙ <think> ---
 def clean_cot_output(text: str) -> str:
-    """Фильтр для вырезания блоков 'мыслей' нейросети"""
+    """Удаляет блоки размышлений нейросетей (<think>...</think>)"""
+    text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"<think>[\s\S]*$", "", text, flags=re.IGNORECASE)
+    
     if "**Итоговый ответ**" in text:
         text = text.split("**Итоговый ответ**")[-1]
     elif "Итоговый ответ:" in text:
         text = text.split("Итоговый ответ:")[-1]
-    
+
     text = re.sub(r"\*\*Резюме[\s\S]*?\n\n", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\*\*Анализ[\s\S]*?\n\n", "", text, flags=re.IGNORECASE)
     return text.strip()
@@ -280,14 +284,15 @@ async def send_smart_response(chat_id: int, bus_id: str, reply_text: str, is_dir
     recent_sent_messages[key] = now
 
     try:
-        if is_direct:
+        # Если есть WebApp-кнопка, всегда отправляем как обычное сообщение для корректной работы
+        if is_direct or reply_markup:
             await bot.send_message(chat_id=chat_id, text=final_text, parse_mode="HTML", reply_markup=reply_markup)
         else:
             await bot.send_message(chat_id=chat_id, text=final_text, business_connection_id=bus_id, parse_mode="HTML", reply_markup=reply_markup)
     except Exception as e:
         print(f"Ошибка отправки HTML: {e}")
         clean_plain = remove_unicode_emojis(reply_text)
-        if is_direct:
+        if is_direct or reply_markup:
             await bot.send_message(chat_id=chat_id, text=clean_plain, reply_markup=reply_markup)
         else:
             await bot.send_message(chat_id=chat_id, text=clean_plain, business_connection_id=bus_id, reply_markup=reply_markup)
@@ -406,13 +411,12 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
     lower_text = user_input.lower().strip()
     is_direct = not bool(bus_id)
 
-    # Список публичных команд, разрешенных всем пользователям
     public_commands = ["!игра", "!тапалка", "/game", "!эли игра"]
     
     if not is_owner and not lower_text.startswith("!статус") and lower_text not in public_commands:
         return False
 
-    # --- КОМАНДА ЗАПУСКА КЛИКЕРА (MINI APP) ---
+    # --- ЗАПУСК ИГРЫ ---
     if lower_text in public_commands:
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -424,8 +428,8 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
                 ]
             ]
         )
-        msg_text = "Жми на кнопку ниже, чтобы открыть кликер прямо в Telegram!"
-        await send_smart_response(chat_id, bus_id, msg_text, is_direct=is_direct, reply_markup=keyboard)
+        msg_text = "Жми на кнопку ниже, чтобы открыть тапалку!"
+        await send_smart_response(chat_id, bus_id, msg_text, is_direct=True, reply_markup=keyboard)
         return True
 
     elif lower_text.startswith("!мут") or lower_text.startswith("!эли мут"):
