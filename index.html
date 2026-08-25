@@ -2,167 +2,146 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Hamster Tap Game</title>
-    <!-- Подключаем SDK Telegram Mini App -->
-    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hamster Kombat Clone</title>
     <style>
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-            -webkit-touch-callout: none;
-            -webkit-user-select: none;
-            user-select: none;
+        :root {
+            --bg-color: #121214;
+            --card-bg: #1e1e24;
+            --accent-yellow: #f3ba2f;
+            --text-main: #ffffff;
+            --text-secondary: #9696a0;
+            --green: #4cd137;
         }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; user-select: none; }
+        body { background-color: var(--bg-color); color: var(--text-main); padding: 16px; display: flex; flex-direction: column; align-items: center; }
+        
+        .header { width: 100%; max-width: 400px; text-align: center; margin-bottom: 15px; }
+        .balance-card { background: var(--card-bg); border-radius: 16px; padding: 16px; margin-bottom: 15px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); border: 1px solid #2a2a35; }
+        .balance-card h1 { font-size: 30px; color: var(--accent-yellow); margin-top: 5px; }
+        .profit-info { font-size: 13px; color: var(--text-secondary); }
+        .profit-value { color: var(--green); font-weight: bold; }
 
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background: #15181c;
-            color: #ffffff;
+        /* Большая кликабельная зона по центру */
+        .clicker-container {
             display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: space-between;
-            height: 100vh;
-            padding: 40px 20px;
-            overflow: hidden;
-        }
-
-        .header {
-            text-align: center;
-        }
-
-        .title {
-            font-size: 16px;
-            color: #8e8e93;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            margin-bottom: 8px;
-        }
-
-        .score {
-            font-size: 48px;
-            font-weight: 800;
-            color: #f1c40f;
-            text-shadow: 0 0 20px rgba(241, 196, 15, 0.3);
-        }
-
-        .coin-btn {
-            width: 220px;
-            height: 220px;
-            border-radius: 50%;
-            background: radial-gradient(circle, #f39c12 0%, #d35400 100%);
-            border: 8px solid #f1c40f;
-            display: flex;
-            align-items: center;
             justify-content: center;
-            font-size: 100px;
+            align-items: center;
+            margin-bottom: 20px;
             cursor: pointer;
-            box-shadow: 0 10px 40px rgba(243, 156, 18px, 0.5);
+            position: relative;
+        }
+        .coin-btn {
+            width: 140px;
+            height: 140px;
+            background: linear-gradient(135deg, #f3ba2f, #e09f1f);
+            border-radius: 50%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 60px;
+            box-shadow: 0 8px 25px rgba(243, 186, 47, 0.4);
             transition: transform 0.05s ease;
         }
-
         .coin-btn:active {
-            transform: scale(0.93);
+            transform: scale(0.92);
         }
 
-        .footer {
-            width: 100%;
-            max-width: 300px;
-        }
-
-        .energy-info {
-            display: flex;
-            justify-content: space-between;
-            font-size: 16px;
-            font-weight: 600;
-            color: #ffffff;
-            margin-bottom: 8px;
-        }
-
-        .progress-bar {
-            width: 100%;
-            height: 12px;
-            background: #2c3e50;
-            border-radius: 6px;
-            overflow: hidden;
-        }
-
-        .progress-fill {
-            width: 100%;
-            height: 100%;
-            background: linear-gradient(90deg, #f1c40f, #e67e22);
-            border-radius: 6px;
-            transition: width 0.2s ease;
-        }
+        .cards-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; width: 100%; max-width: 400px; }
+        .card { background: var(--card-bg); border-radius: 14px; padding: 12px; display: flex; flex-direction: column; justify-content: space-between; border: 1px solid #2a2a35; cursor: pointer; transition: 0.1s; }
+        .card:active { transform: scale(0.96); }
+        .card-title { font-size: 12px; font-weight: 600; margin-bottom: 4px; }
+        .card-profit { font-size: 11px; color: var(--green); margin-bottom: 8px; }
+        .card-footer { display: flex; justify-content: space-between; align-items: center; border-top: 1px solid #2a2a35; padding-top: 6px; }
+        .card-level { font-size: 11px; color: var(--text-secondary); }
+        .card-price { font-size: 11px; font-weight: bold; color: var(--accent-yellow); }
     </style>
 </head>
 <body>
 
     <div class="header">
-        <div class="title">Баланс монет</div>
-        <div class="score" id="score">0</div>
-    </div>
-
-    <div class="coin-btn" id="coin">🐹</div>
-
-    <div class="footer">
-        <div class="energy-info">
-            <span>⚡ Энергия</span>
-            <span id="energy-text">1000 / 1000</span>
-        </div>
-        <div class="progress-bar">
-            <div class="progress-fill" id="energy-bar"></div>
+        <div class="balance-card">
+            <span class="profit-info">Прибыль в час <span class="profit-value" id="profitPerHour">+10,73K</span></span>
+            <h1 id="balance">🪙 403,65K</h1>
         </div>
     </div>
+
+    <!-- Тапалка по центру -->
+    <div class="clicker-container">
+        <div class="coin-btn" id="clickCoin">🐹</div>
+    </div>
+
+    <div class="cards-grid" id="cardsGrid"></div>
 
     <script>
         const tg = window.Telegram.WebApp;
-        tg.expand(); // Разворачиваем кликер во весь экран
+        tg.expand();
 
-        const MAX_ENERGY = 1000;
-        let count = Number(localStorage.getItem('coins')) || 0;
-        let energy = Number(localStorage.getItem('energy')) ?? MAX_ENERGY;
+        let balance = 403650;
+        let profit = 10730;
+        let clickPower = 1; // Сколько монет дает один тап
 
-        const scoreEl = document.getElementById('score');
-        const energyTextEl = document.getElementById('energy-text');
-        const energyBarEl = document.getElementById('energy-bar');
-        const coinBtn = document.getElementById('coin');
+        const cards = [
+            { id: 'lic_south', name: 'Licence South America', lvl: 12, profitInc: 6900, price: 403650 },
+            { id: 'lic_aus', name: 'Licence Australia', lvl: 11, profitInc: 10730, price: 214060 },
+            { id: 'lic_na', name: 'Licence North America', lvl: 11, profitInc: 15100, price: 128130 },
+            { id: 'lic_nig', name: 'Licence Nigeria', lvl: 12, profitInc: 3040, price: 121090 }
+        ];
 
-        function updateUI() {
-            scoreEl.innerText = count.toLocaleString();
-            energyTextEl.innerText = `${energy} /${MAX_ENERGY}`;
-            energyBarEl.style.width = `${(energy / MAX_ENERGY) * 100}%`;
+        function renderGame() {
+            const grid = document.getElementById('cardsGrid');
+            grid.innerHTML = '';
+            cards.forEach(card => {
+                grid.innerHTML += `
+                    <div class="card" onclick="upgradeCard('${card.id}')">
+                        <div>
+                            <div class="card-title">${card.name}</div>
+                            <div class="card-profit">+${card.profitInc.toLocaleString()} / ч</div>
+                        </div>
+                        <div class="card-footer">
+                            <span class="card-level">lvl ${card.lvl}</span>
+                            <span class="card-price">🪙 ${card.price.toLocaleString()}</span>
+                        </div>
+                    </div>
+                `;
+            });
+            document.getElementById('balance').innerText = `🪙 ${Math.floor(balance).toLocaleString()}`;
+            document.getElementById('profitPerHour').innerText = `+${profit.toLocaleString()}`;
         }
 
-        updateUI();
-
-        coinBtn.addEventListener('click', () => {
-            if (energy > 0) {
-                count += 1;
-                energy -= 1;
-
-                localStorage.setItem('coins', count);
-                localStorage.setItem('energy', energy);
-
-                updateUI();
-
-                // Виброотклик в Telegram при каждом тапе
-                if (tg.HapticFeedback) {
-                    tg.HapticFeedback.impactOccurred('light');
-                }
+        // Клик по хомяку / монетке
+        document.getElementById('clickCoin').addEventListener('click', () => {
+            balance += clickPower;
+            renderGame();
+            if (tg.HapticFeedback) {
+                tg.HapticFeedback.impactOccurred('light');
             }
         });
 
-        // Регенерация +1 энергии в секунду
-        setInterval(() => {
-            if (energy < MAX_ENERGY) {
-                energy += 1;
-                localStorage.setItem('energy', energy);
-                updateUI();
+        function upgradeCard(id) {
+            const card = cards.find(c => c.id === id);
+            if (balance >= card.price) {
+                balance -= card.price;
+                profit += card.profitInc;
+                card.lvl += 1;
+                card.price = Math.round(card.price * 1.5);
+                renderGame();
+                
+                if (tg.HapticFeedback) {
+                    tg.HapticFeedback.impactOccurred('medium');
+                }
+            } else {
+                tg.showAlert('Недостаточно монет!');
             }
+        }
+
+        // Пассивный доход каждую секунду
+        setInterval(() => {
+            balance += profit / 3600;
+            document.getElementById('balance').innerText = `🪙 ${Math.floor(balance).toLocaleString()}`;
         }, 1000);
+
+        renderGame();
     </script>
 </body>
 </html>
