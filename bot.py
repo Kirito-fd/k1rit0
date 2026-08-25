@@ -31,12 +31,11 @@ if single_key and single_key.strip() not in GROQ_KEYS:
 
 current_key_index = 0
 
-# --- ТОЛЬКО АКТИВНЫЕ И ПРОВЕРЕННЫЕ МОДЕЛИ GROQ ---
+# --- ТОЛЬКО СТАБИЛЬНЫЕ ПРОДАКШЕН-МОДЕЛИ GROQ (БЕЗ PREVIEW) ---
 CURRENT_MODELS = [
-    "llama-3.1-8b-instant",
     "llama-3.3-70b-versatile",
-    "gemma2-9b-it",
-    "llama-3.2-3b-preview"
+    "llama-3.1-8b-instant",
+    "gemma2-9b-it"
 ]
 
 def get_groq_client():
@@ -332,7 +331,7 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
                     current_key_index = (current_key_index + 1) % len(GROQ_KEYS)
                     continue
                 elif e.status_code in [400, 404]:
-                    print(f"Модель {clean_model_name} недоступна ({e.status_code}), переключаемся дальше...")
+                    print(f"Модель {clean_model_name} недоступна ({e.status_code}), мгновенно переходим к следующей...")
                     break
             except Exception as e:
                 last_error = f"Exception: {str(e)}"
