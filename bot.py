@@ -22,11 +22,12 @@ GROQ_KEYS = [
 
 current_key_index = 0
 
-# --- ТОЛЬКО ДЕЙСТВУЮЩИЕ И СТАБИЛЬНЫЕ МОДЕЛИ GROQ ---
+# --- ТОЛЬКО АКТУАЛЬНЫЕ ФЛАГМАНСКИЕ МОДЕЛИ GROQ ---
 CURRENT_MODELS = [
     "llama-3.3-70b-versatile",
     "llama-3.1-8b-instant",
-    "mixtral-8x7b-32768"
+    "llama3-70b-8192",
+    "llama3-8b-8192"
 ]
 
 def get_groq_client():
@@ -289,8 +290,6 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
         user_histories[session_id] = [history[0]] + history[-13:]
         history = user_histories[session_id]
 
-    last_error = "Неизвестная ошибка"
-
     for model_name in CURRENT_MODELS:
         clean_model_name = model_name.strip()
         for _ in range(len(GROQ_KEYS)):
@@ -317,21 +316,20 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
                 return reply_text.strip()
                 
             except APIError as e:
-                last_error = f"HTTP {e.status_code} — {e.message}"
                 if e.status_code in [429, 401, 403]:
                     current_key_index = (current_key_index + 1) % len(GROQ_KEYS)
                     continue
                 elif e.status_code in [400, 404]:
-                    print(f"Модель {clean_model_name} недоступна ({e.status_code}), переходим к следующей...")
+                    print(f"Модель {clean_model_name} устарела/недоступна ({e.status_code}), тихий переход к следующей моделью...")
                     break
             except Exception as e:
-                last_error = f"Exception: {str(e)}"
+                print(f"Исключение при запросе к Groq ({clean_model_name}): {e}")
                 break
 
     if user_histories[session_id] and user_histories[session_id][-1]["role"] == "user":
         user_histories[session_id].pop()
 
-    return f"⚠️ Ошибка API Groq: {last_error}"
+    return "Ой, задержка на сервере... Спроси ещё раз!"
 
 async def spam_worker(chat_id: int, bus_id: str, text_to_spam: str, count: int = None):
     try:
