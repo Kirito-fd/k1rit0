@@ -31,10 +31,12 @@ if single_key and single_key.strip() not in GROQ_KEYS:
 
 current_key_index = 0
 
-# Исключительно активные и поддерживаемые модели Groq
+# Актуальные модели Groq без лишних пробелов
 CURRENT_MODELS = [
     "llama-3.1-8b-instant",
-    "llama-3.3-70b-versatile"
+    "llama-3.3-70b-versatile",
+    "llama3-8b-8192",
+    "mixtral-8x7b-32768"
 ]
 
 def get_groq_client():
@@ -300,11 +302,12 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
     last_error = "Неизвестная ошибка"
 
     for model_name in CURRENT_MODELS:
+        clean_model_name = model_name.strip()
         for _ in range(len(GROQ_KEYS)):
             try:
                 client = get_groq_client()
                 completion = client.chat.completions.create(
-                    model=model_name,
+                    model=clean_model_name,
                     messages=history,
                     temperature=1.0,
                     max_tokens=max_tokens,
@@ -329,7 +332,7 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
                     current_key_index = (current_key_index + 1) % len(GROQ_KEYS)
                     continue
                 elif e.status_code in [400, 404]:
-                    print(f"Модель {model_name} вернула {e.status_code}, переключаем на следующую модель...")
+                    print(f"Модель {clean_model_name} недоступна ({e.status_code}), переключаемся далее...")
                     break
             except Exception as e:
                 last_error = f"Exception: {str(e)}"
@@ -493,7 +496,6 @@ async def handle_direct_message(message: types.Message):
         await message.answer(add_random_custom_emoji("Привет, Кирито! Я на связи в личке... ✨"), parse_mode="HTML")
         return
 
-    # Проверка управляющих команд в ЛС
     if user_input.startswith("!") or user_input.startswith("/"):
         if await process_bot_command(message, user_input, is_owner=True, bus_id=""):
             return
@@ -521,7 +523,6 @@ async def handle_business_message(message: types.Message):
     if not user_input:
         return
 
-    # Выполнение команд в Telegram Business
     if user_input.startswith("!") or user_input.startswith("/"):
         if await process_bot_command(message, user_input, is_owner=is_owner, bus_id=bus_id):
             if is_owner:
@@ -531,7 +532,6 @@ async def handle_business_message(message: types.Message):
                     pass
             return
 
-    # Пропуск ответов, если бот отключен или пишет владелец
     if not active_chats.get(chat_id, True) or is_owner:
         return
 
@@ -578,7 +578,7 @@ async def main():
     await start_web_server()
     asyncio.create_task(cleaner_background_task())
     await bot.delete_webhook(drop_pending_updates=True)
-    print("Бот запущен со всеми исправлениями!")
+    print("Бот запущен!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
