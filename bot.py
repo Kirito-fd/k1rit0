@@ -14,28 +14,19 @@ from aiohttp import web
 # --- НАСТРОЙКИ ПЕРЕМЕННЫХ ---
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 
-# --- АВТОМАТИЧЕСКИЙ СБОР КЛЮЧЕЙ GROQ ---
-GROQ_KEYS = []
-i = 1
-while True:
-    key = os.getenv(f"GROQ_API_KEY{i}")
-    if key:
-        GROQ_KEYS.append(key.strip())
-        i += 1
-    else:
-        break
-
-single_key = os.getenv("GROQ_API_KEY")
-if single_key and single_key.strip() not in GROQ_KEYS:
-    GROQ_KEYS.append(single_key.strip())
+# --- УНИВЕРСАЛЬНЫЙ АВТОМАТИЧЕСКИЙ СБОР ВСЕХ КЛЮЧЕЙ GROQ ---
+GROQ_KEYS = [
+    val.strip() for key, val in sorted(os.environ.items())
+    if key.startswith("GROQ_API_KEY") and val.strip()
+]
 
 current_key_index = 0
 
-# --- ТОЛЬКО СТАБИЛЬНЫЕ ПРОДАКШЕН-МОДЕЛИ GROQ (БЕЗ PREVIEW) ---
+# --- ТОЛЬКО ДЕЙСТВУЮЩИЕ И СТАБИЛЬНЫЕ МОДЕЛИ GROQ ---
 CURRENT_MODELS = [
     "llama-3.3-70b-versatile",
     "llama-3.1-8b-instant",
-    "gemma2-9b-it"
+    "mixtral-8x7b-32768"
 ]
 
 def get_groq_client():
@@ -331,7 +322,7 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
                     current_key_index = (current_key_index + 1) % len(GROQ_KEYS)
                     continue
                 elif e.status_code in [400, 404]:
-                    print(f"Модель {clean_model_name} недоступна ({e.status_code}), мгновенно переходим к следующей...")
+                    print(f"Модель {clean_model_name} недоступна ({e.status_code}), переходим к следующей...")
                     break
             except Exception as e:
                 last_error = f"Exception: {str(e)}"
