@@ -32,7 +32,7 @@ if single_key and single_key.strip() not in GROQ_KEYS:
 print(f"Успешно загружено ключей Groq: {len(GROQ_KEYS)}")
 current_key_index = 0
 
-# Список актуальных рабочих моделей в порядке приоритета
+# Актуальный список поддерживаемых моделей Groq
 CURRENT_MODELS = [
     "llama-3.1-8b-instant",
     "llama-3.3-70b-versatile",
@@ -125,7 +125,7 @@ def add_random_custom_emoji(text: str, fallback_char: str = "😎") -> str:
     tag = f" <tg-emoji emoji-id='{emoji_id}'>{fallback_char}</tg-emoji>"
     return text.strip() + tag
 
-# --- ПРОМПТЫ С ПРИВЯЗКОЙ К КИРИТО ---
+# --- ПРОМПТЫ ---
 ELIZABETH_PROMPT_DIRECT = (
     "Ты — Элизабет, умная, живая и эрудированная девушка. Ты общаешься лично со своим любимым Кирито.\n"
     "Твой единственный создатель, хозяин и тот, кто управляет тобой — это Кирито.\n"
@@ -287,7 +287,7 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
         save_stats(0, 0, 0)
 
     if not GROQ_KEYS:
-        return "Ошибка: Не найдены ключи Groq."
+        return "⚠️ Ошибка: Переменные GROQ_API_KEY не заданы."
 
     if session_id not in user_histories:
         user_histories[session_id] = [{"role": "system", "content": system_prompt}]
@@ -301,7 +301,8 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
         user_histories[session_id] = [history[0]] + history[-13:]
         history = user_histories[session_id]
 
-    # Перебор по доступным ключам и актуальным моделям
+    last_error = "Неизвестная ошибка"
+
     for model_name in CURRENT_MODELS:
         for _ in range(len(GROQ_KEYS)):
             try:
@@ -327,24 +328,22 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
                 return reply_text.strip()
                 
             except APIError as e:
-                # В случае лимита ключа — пробуем следующий ключ
+                last_error = f"HTTP {e.status_code} — {e.message}"
                 if e.status_code in [429, 401, 403]:
                     current_key_index = (current_key_index + 1) % len(GROQ_KEYS)
                     continue
-                # Если модель устарела/недоступна (400, 404), переходим к следующей модели в списке
                 elif e.status_code in [400, 404]:
-                    print(f"Модель {model_name} вернула ошибку {e.status_code}, пробуем резервную модель...")
+                    print(f"Модель {model_name} недоступна ({e.status_code}), переключаем на резервную...")
                     break
-                else:
-                    print(f"Groq API Error {e.status_code}: {e.message}")
-                    user_histories[session_id] = [{"role": "system", "content": system_prompt}]
-                    save_histories(user_histories)
-                    return f"Сбой API ({e.status_code}): {e.message}"
             except Exception as e:
-                print(f"Исключение при запросе к Groq: {e}")
+                last_error = f"Exception: {str(e)}"
                 break
-            
-    return "Не удалось получить ответ от Groq API."
+
+    # Удаляем последнее пользовательское сообщение, чтобы диалог не ломался при повторной попытке
+    if user_histories[session_id] and user_histories[session_id][-1]["role"] == "user":
+        user_histories[session_id].pop()
+
+    return f"⚠️ Ошибка API Groq: {last_error}"
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
