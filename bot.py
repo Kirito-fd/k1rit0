@@ -32,11 +32,10 @@ if single_key and single_key.strip() not in GROQ_KEYS:
 print(f"Успешно загружено ключей Groq: {len(GROQ_KEYS)}")
 current_key_index = 0
 
-# Актуальный список поддерживаемых моделей Groq
+# Исключительно активные и поддерживаемые модели Groq
 CURRENT_MODELS = [
     "llama-3.1-8b-instant",
-    "llama-3.3-70b-versatile",
-    "gemma2-9b-it"
+    "llama-3.3-70b-versatile"
 ]
 
 def get_groq_client():
@@ -329,17 +328,19 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
                 
             except APIError as e:
                 last_error = f"HTTP {e.status_code} — {e.message}"
+                # Превышение лимита или неверный ключ — меняем API-ключ
                 if e.status_code in [429, 401, 403]:
                     current_key_index = (current_key_index + 1) % len(GROQ_KEYS)
                     continue
+                # Модель выведена из эксплуатации или неверный запрос — переходим к следующей модели
                 elif e.status_code in [400, 404]:
-                    print(f"Модель {model_name} недоступна ({e.status_code}), переключаем на резервную...")
+                    print(f"Модель {model_name} вернула {e.status_code}, переключаем на следующую модель...")
                     break
             except Exception as e:
                 last_error = f"Exception: {str(e)}"
                 break
 
-    # Удаляем последнее пользовательское сообщение, чтобы диалог не ломался при повторной попытке
+    # Если все модели выдали ошибку, откатываем пользовательское сообщение из истории
     if user_histories[session_id] and user_histories[session_id][-1]["role"] == "user":
         user_histories[session_id].pop()
 
