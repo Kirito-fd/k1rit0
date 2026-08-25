@@ -22,12 +22,10 @@ GROQ_KEYS = [
 
 current_key_index = 0
 
-# --- ТОЛЬКО АКТУАЛЬНЫЕ ФЛАГМАНСКИЕ МОДЕЛИ GROQ ---
+# --- ТОЛЬКО АКТУАЛЬНЫЕ И ПОДДЕРЖИВАЕМЫЕ МОДЕЛИ GROQ ---
 CURRENT_MODELS = [
     "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant",
-    "llama3-70b-8192",
-    "llama3-8b-8192"
+    "llama-3.1-8b-instant"
 ]
 
 def get_groq_client():
@@ -276,7 +274,7 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
         save_stats(0, 0, 0)
 
     if not GROQ_KEYS:
-        return "⚠️ Ошибка: Переменные GROQ_API_KEY не заданы."
+        return "⚠️ Ошибка: Переменные GROQ_API_KEY не найдены на сервере."
 
     if session_id not in user_histories:
         user_histories[session_id] = [{"role": "system", "content": system_prompt}]
@@ -289,6 +287,8 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
     if len(history) > 14:
         user_histories[session_id] = [history[0]] + history[-13:]
         history = user_histories[session_id]
+
+    last_error_details = ""
 
     for model_name in CURRENT_MODELS:
         clean_model_name = model_name.strip()
@@ -316,20 +316,22 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
                 return reply_text.strip()
                 
             except APIError as e:
+                last_error_details = f"HTTP {e.status_code}: {e.message}"
+                print(f"Groq API Error [{clean_model_name} | Key Index {current_key_index}]: {last_error_details}")
                 if e.status_code in [429, 401, 403]:
                     current_key_index = (current_key_index + 1) % len(GROQ_KEYS)
                     continue
                 elif e.status_code in [400, 404]:
-                    print(f"Модель {clean_model_name} устарела/недоступна ({e.status_code}), тихий переход к следующей моделью...")
                     break
             except Exception as e:
-                print(f"Исключение при запросе к Groq ({clean_model_name}): {e}")
+                last_error_details = str(e)
+                print(f"Groq Exception [{clean_model_name}]: {last_error_details}")
                 break
 
     if user_histories[session_id] and user_histories[session_id][-1]["role"] == "user":
         user_histories[session_id].pop()
 
-    return "Ой, задержка на сервере... Спроси ещё раз!"
+    return f"⚠️ API Error: {last_error_details}" if last_error_details else "⚠️ Все ключи и модели недоступны."
 
 async def spam_worker(chat_id: int, bus_id: str, text_to_spam: str, count: int = None):
     try:
