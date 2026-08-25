@@ -31,12 +31,12 @@ if single_key and single_key.strip() not in GROQ_KEYS:
 
 current_key_index = 0
 
-# Актуальные модели Groq без лишних пробелов
+# --- АКТУАЛЬНЫЕ И РАБОЧИЕ МОДЕЛИ GROQ ---
 CURRENT_MODELS = [
     "llama-3.1-8b-instant",
     "llama-3.3-70b-versatile",
-    "llama3-8b-8192",
-    "mixtral-8x7b-32768"
+    "gemma2-9b-it",
+    "deepseek-r1-distill-llama-70b"
 ]
 
 def get_groq_client():
@@ -332,7 +332,7 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
                     current_key_index = (current_key_index + 1) % len(GROQ_KEYS)
                     continue
                 elif e.status_code in [400, 404]:
-                    print(f"Модель {clean_model_name} недоступна ({e.status_code}), переключаемся далее...")
+                    print(f"Модель {clean_model_name} недоступна ({e.status_code}), пробуем следующую...")
                     break
             except Exception as e:
                 last_error = f"Exception: {str(e)}"
@@ -578,7 +578,7 @@ async def main():
     await start_web_server()
     asyncio.create_task(cleaner_background_task())
     await bot.delete_webhook(drop_pending_updates=True)
-    print("Бот запущен!")
+    print("Бот успешно запущен!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
