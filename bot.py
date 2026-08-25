@@ -22,16 +22,39 @@ GROQ_KEYS = [
 
 current_key_index = 0
 
-# --- ТОЛЬКО АКТУАЛЬНЫЕ И ПОДДЕРЖИВАЕМЫЕ МОДЕЛИ GROQ ---
-CURRENT_MODELS = [
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant"
-]
-
 def get_groq_client():
     if not GROQ_KEYS:
         return None
     return Groq(api_key=GROQ_KEYS[current_key_index])
+
+# --- ДИНАМИЧЕСКИЙ ПОЛУЧАТЕЛЬ АКТИВНЫХ МОДЕЛЕЙ ---
+def get_active_models() -> list[str]:
+    global current_key_index
+    if not GROQ_KEYS:
+        return ["llama-3.3-70b-versatile"]
+    
+    for _ in range(len(GROQ_KEYS)):
+        try:
+            client = get_groq_client()
+            models_data = client.models.list()
+            # Фильтруем аудио и спецмодели, оставляя только текстовые LLM
+            valid_models = [
+                m.id for m in models_data.data 
+                if not any(x in m.id.lower() for x in ["whisper", "guard", "tool", "vision", "embed"])
+            ]
+            if valid_models:
+                # Ставим 70b модели в приоритет для лучшего качества
+                valid_models.sort(key=lambda x: ("70b" in x or "versatile" in x), reverse=True)
+                return valid_models
+        except APIError as e:
+            if e.status_code in [429, 401, 403]:
+                current_key_index = (current_key_index + 1) % len(GROQ_KEYS)
+                continue
+            break
+        except Exception:
+            break
+            
+    return ["llama-3.3-70b-versatile"]
 
 active_chats = {}   
 nsfw_modes = {}    
@@ -288,9 +311,11 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
         user_histories[session_id] = [history[0]] + history[-13:]
         history = user_histories[session_id]
 
+    # Динамически загружаем список РАБОТАЮЩИХ моделей с серверов Groq
+    available_models = get_active_models()
     last_error_details = ""
 
-    for model_name in CURRENT_MODELS:
+    for model_name in available_models:
         clean_model_name = model_name.strip()
         for _ in range(len(GROQ_KEYS)):
             try:
@@ -317,21 +342,20 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
                 
             except APIError as e:
                 last_error_details = f"HTTP {e.status_code}: {e.message}"
-                print(f"Groq API Error [{clean_model_name} | Key Index {current_key_index}]: {last_error_details}")
                 if e.status_code in [429, 401, 403]:
                     current_key_index = (current_key_index + 1) % len(GROQ_KEYS)
                     continue
                 elif e.status_code in [400, 404]:
+                    # Тихий переход к следующей рабочей модель из списка
                     break
             except Exception as e:
                 last_error_details = str(e)
-                print(f"Groq Exception [{clean_model_name}]: {last_error_details}")
                 break
 
     if user_histories[session_id] and user_histories[session_id][-1]["role"] == "user":
         user_histories[session_id].pop()
 
-    return f"⚠️ API Error: {last_error_details}" if last_error_details else "⚠️ Все ключи и модели недоступны."
+    return f"⚠️ API Error: {last_error_details}" if last_error_details else "⚠️ Нет доступных нейросетей."
 
 async def spam_worker(chat_id: int, bus_id: str, text_to_spam: str, count: int = None):
     try:
