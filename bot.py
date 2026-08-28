@@ -154,26 +154,20 @@ def add_random_custom_emoji(text: str, fallback_char: str = "✨") -> str:
     tag = f" <tg-emoji emoji-id='{emoji_id}'>{fallback_char}</tg-emoji>"
     return clean_text + tag
 
-# --- ИНЛАЙН-КНОПКИ УПРАВЛЕНИЯ ДЛЯ ВЛАДЕЛЬЦА ---
+# --- КОМПАКТНАЯ ПАНЕЛЬ КНОПОК УПРАВЛЕНИЯ ---
 def get_owner_control_keyboard(chat_id: int):
     current_mode = nsfw_modes.get(chat_id, False)
-    mode_text = "❄️ Обычный"
-    if current_mode == "nsfw":
-        mode_text = "🔥 Пошлый"
-    elif current_mode == "strict":
-        mode_text = "⚡ Строгий"
-
+    mode_text = "🔥 Пошлый" if current_mode == "nsfw" else ("⚡ Строгий" if current_mode == "strict" else "❄️ Обычный")
     bot_active = active_chats.get(chat_id, True)
-    bot_toggle_text = "🔴 Выключить бота" if bot_active else "🟢 Включить бота"
-
+    
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(text=f"Режим: {mode_text}", callback_data="el_toggle_mode"),
-                InlineKeyboardButton(text="🧹 Сбросить кэш", callback_data="el_clear_cache")
+                InlineKeyboardButton(text="🧹 Кэш", callback_data="el_clear_cache")
             ],
             [
-                InlineKeyboardButton(text=bot_toggle_text, callback_data="el_toggle_bot"),
+                InlineKeyboardButton(text="🔴 Выкл" if bot_active else "🟢 Вкл", callback_data="el_toggle_bot"),
                 InlineKeyboardButton(text="📊 Статус", callback_data="el_status")
             ],
             [
@@ -721,7 +715,6 @@ async def handle_business_message(message: types.Message):
         base_prompt = ELIZABETH_PROMPT_GIRLFRIEND if is_female else ELIZABETH_PROMPT_BUSINESS_MALE
 
     reply = await ask_groq(user_input, chat_id, base_prompt, max_tokens=500)
-    # Хозяину отправляем с клавиатурой управления, гостям — без
     markup = get_owner_control_keyboard(chat_id) if is_owner else None
     await send_smart_response(chat_id, bus_id, reply, is_direct=False, reply_markup=markup)
 
