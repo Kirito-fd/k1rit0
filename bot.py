@@ -6,11 +6,12 @@ import datetime
 import json
 import re
 import aiohttp
+from gtts import gTTS
 from groq import Groq, APIError
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.methods import DeleteBusinessMessages
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiohttp import web
 
 # --- НАСТРОЙКИ ПЕРЕМЕННЫХ ---
@@ -58,14 +59,41 @@ def get_active_models() -> list[str]:
     return ["llama-3.3-70b-versatile"]
 
 active_chats = {}    
-nsfw_modes = {}     
-blocked_guests = {} 
-muted_chats = {}    
 active_spams = {}   
 user_message_times = {}
 
 processed_message_ids = set()
 recent_sent_messages = {}
+
+# --- СОХРАНЕНИЕ И ЗАГРУЗКА НАСТРОЕК (МУТЫ, БАНЫ, РЕЖИМЫ) ---
+SETTINGS_FILE = "bot_settings.json"
+
+def load_settings():
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                mutes = {int(k): v for k, v in data.get("muted_chats", {}).items()}
+                bans = {int(k): v for k, v in data.get("blocked_guests", {}).items()}
+                modes = {int(k): v for k, v in data.get("nsfw_modes", {}).items()}
+                return mutes, bans, modes
+        except Exception as e:
+            print(f"Ошибка загрузки настроек: {e}")
+    return {}, {}, {}
+
+def save_settings():
+    data = {
+        "muted_chats": muted_chats,
+        "blocked_guests": blocked_guests,
+        "nsfw_modes": nsfw_modes
+    }
+    try:
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        print(f"Ошибка сохранения настроек: {e}")
+
+muted_chats, blocked_guests, nsfw_modes = load_settings()
 
 # --- СОХРАНЕНИЕ И ЗАГРУЗКА ИСТОРИИ ДИАЛОГОВ ---
 HISTORY_FILE = "user_histories.json"
@@ -215,11 +243,32 @@ def clean_cot_output(text: str) -> str:
     text = re.sub(r"\*\*Анализ[\s\S]*?\n\n", "", text, flags=re.IGNORECASE)
     return text.strip()
 
-check_chat_flood = lambda chat_id, max_msgs=4, window_seconds=6: (
-    user_message_times.setdefault(chat_id, []),
-    user_message_times.update({chat_id: [t for t in user_message_times[chat_id] if time.time() - t < window_seconds] + [time.time()]}),
-    len(user_message_times[chat_id]) > max_msgs
-)[-1]
+async def check_chat_flood(chat_id: int, bus_id: str, max_msgs=4, window_seconds=6) -> bool:
+    now = time.time()
+    user_message_times.setdefault(chat_id, [])
+    user_message_times[chat_id] = [t for t in user_message_times[chat_id] if now - t < window_seconds]
+    user_message_times[chat_id].append(now)
+
+    if len(user_message_times[chat_id]) > max_msgs:
+        # Авто-мут на 5 минут при флуде
+        muted_chats[chat_id] = now + 300
+        save_settings()
+        
+        notice_text = "⚠️ Слишком много сообщений! Ты автоматически улетел в мут на 5 минут за флуд."
+        unmute_keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🔓 Размутить", callback_data="el_unmute_direct")]
+            ]
+        )
+        try:
+            if bus_id:
+                await bot.send_message(chat_id=chat_id, text=notice_text, business_connection_id=bus_id, reply_markup=unmute_keyboard)
+            else:
+                await bot.send_message(chat_id=chat_id, text=notice_text, reply_markup=unmute_keyboard)
+        except Exception:
+            pass
+        return True
+    return False
 
 async def transcribe_audio_with_groq(audio_file_path: str) -> str:
     global current_key_index
@@ -244,12 +293,14 @@ async def transcribe_audio_with_groq(audio_file_path: str) -> str:
             break
     return "[Пользователь отправил голосовое сообщение]"
 
-async def extract_message_content(message: types.Message) -> str:
+async def extract_message_content(message: types.Message) -> tuple[str, bool]:
+    is_voice_msg = False
     if message.text:
-        return message.text
+        return message.text, False
     if message.caption:
-        return f"[Медиа с подписью]: {message.caption}"
+        return f"[Медиа с подписью]: {message.caption}", False
     if message.voice or message.video_note:
+        is_voice_msg = True
         file_obj = message.voice or message.video_note
         file = await bot.get_file(file_obj.file_id)
         local_path = f"temp_{file_obj.file_id}.ogg"
@@ -257,26 +308,46 @@ async def extract_message_content(message: types.Message) -> str:
         transcribed = await transcribe_audio_with_groq(local_path)
         if os.path.exists(local_path):
             os.remove(local_path)
-        return transcribed
+        return transcribed, is_voice_msg
     if message.sticker:
-        return "Собеседник отправил стикер."
+        return "Собеседник отправил стикер.", False
     if message.photo:
-        return "Собеседник отправил картинку."
+        return "Собеседник отправил картинку.", False
     if message.video:
-        return "Собеседник отправил видео."
-    return "Собеседник отправил сообщение."
+        return "Собеседник отправил видео.", False
+    return "Собеседник отправил сообщение.", False
 
-async def send_smart_response(chat_id: int, bus_id: str, reply_text: str, is_direct: bool = False, reply_markup=None):
+async def send_smart_response(chat_id: int, bus_id: str, reply_text: str, is_direct: bool = False, reply_markup=None, send_as_voice: bool = False):
     if not reply_text.strip():
         reply_text = "Хм... И что это должно значить?"
     
-    final_text = add_random_custom_emoji(reply_text)
     now = time.time()
-    key = (chat_id, final_text)
+    key = (chat_id, reply_text)
     if key in recent_sent_messages and now - recent_sent_messages[key] < 3:
         return
     recent_sent_messages[key] = now
 
+    # Если собеседник прислал голосовое, отвечаем голосом (TTS)
+    if send_as_voice:
+        try:
+            tts_text = remove_unicode_emojis(reply_text)
+            tts = gTTS(text=tts_text, lang='ru')
+            voice_path = f"response_{chat_id}.ogg"
+            tts.save(voice_path)
+            voice_file = FSInputFile(voice_path)
+            
+            if is_direct:
+                await bot.send_voice(chat_id=chat_id, voice=voice_file, reply_markup=reply_markup)
+            else:
+                await bot.send_voice(chat_id=chat_id, voice=voice_file, business_connection_id=bus_id, reply_markup=reply_markup)
+            
+            if os.path.exists(voice_path):
+                os.remove(voice_path)
+            return
+        except Exception as e:
+            print(f"Ошибка синтеза голоса: {e}")
+
+    final_text = add_random_custom_emoji(reply_text)
     try:
         if is_direct:
             await bot.send_message(chat_id=chat_id, text=final_text, parse_mode="HTML", reply_markup=reply_markup)
@@ -295,9 +366,14 @@ async def cleaner_background_task():
         await asyncio.sleep(30)
         now = time.time()
         expired_mutes = [cid for cid, m_time in muted_chats.items() if m_time != float('inf') and now >= m_time]
-        for cid in expired_mutes: del muted_chats[cid]
+        if expired_mutes:
+            for cid in expired_mutes: del muted_chats[cid]
+            save_settings()
+
         expired_chats = [cid for cid, b_time in blocked_guests.items() if b_time != float('inf') and now >= b_time]
-        for cid in expired_chats: del blocked_guests[cid]
+        if expired_chats:
+            for cid in expired_chats: del blocked_guests[cid]
+            save_settings()
 
 async def handle_ping(request):
     return web.Response(text="Bot is alive!")
@@ -406,6 +482,27 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
 
     public_commands = ["игра", "тапалка", "!игра", "!тапалка", "/game", "!эли игра"]
     
+    # Мини-игра «Камень, ножницы, бумага» (доступна всем)
+    if lower_text.startswith("кнб ") or lower_text.startswith("!кнб "):
+        user_choice = lower_text.split()[1] if len(lower_text.split()) > 1 else ""
+        choices = ["камень", "ножницы", "бумага"]
+        if user_choice not in choices:
+            await send_smart_response(chat_id, bus_id, "Выбери: кнб камень, кнб ножницы или кнб бумага!", is_direct=is_direct)
+            return True
+        
+        bot_choice = random.choice(choices)
+        if user_choice == bot_choice:
+            res = f"У меня {bot_choice}. Ничья!"
+        elif (user_choice == "камень" and bot_choice == "ножницы") or \
+             (user_choice == "ножницы" and bot_choice == "бумага") or \
+             (user_choice == "бумага" and bot_choice == "камень"):
+            res = f"У меня {bot_choice}. Ты выиграл!"
+        else:
+            res = f"У меня {bot_choice}. Я победил!"
+        
+        await send_smart_response(chat_id, bus_id, res, is_direct=is_direct)
+        return True
+
     if not is_owner and not lower_text.startswith("статус") and not lower_text.startswith("!статус") and lower_text not in public_commands:
         return False
 
@@ -431,6 +528,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
             muted_chats[chat_id] = float('inf')
             notice_text = "🔇 Собеседник в муте навсегда"
 
+        save_settings()
         unmute_keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="🔓 Размутить", callback_data="el_unmute_direct")]
@@ -441,6 +539,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
 
     elif lower_text in ["анмут", "unmute", "размут", "!анмут", "!эли анмут", "!размут", "!эли размут"]:
         muted_chats.pop(chat_id, None)
+        save_settings()
         notice_text = "🟢 Собеседник размучен"
         await send_smart_response(chat_id, bus_id, notice_text, is_direct=is_direct)
         return True
@@ -501,16 +600,19 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
 
     elif lower_text in ["эли пошлый", "!эли пошлый", "!эли пошл"]:
         nsfw_modes[chat_id] = "nsfw"
+        save_settings()
         await send_smart_response(chat_id, bus_id, "🔥 Пошлый режим активирован!", is_direct=is_direct)
         return True
 
     elif lower_text in ["эли строгий", "!эли строгий", "!эли строго"]:
         nsfw_modes[chat_id] = "strict"
+        save_settings()
         await send_smart_response(chat_id, bus_id, "⚡ Строгий режим активирован!", is_direct=is_direct)
         return True
 
     elif lower_text in ["эли норма", "!эли норма", "!эли норм"]:
-        nsfw_modes[chat_id] = False
+        nsfw_modes.pop(chat_id, None)
+        save_settings()
         await send_smart_response(chat_id, bus_id, "❄️ Обычный режим возвращен.", is_direct=is_direct)
         return True
 
@@ -537,6 +639,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
 async def handle_unmute_callback(callback: types.CallbackQuery):
     chat_id = callback.message.chat.id
     muted_chats.pop(chat_id, None)
+    save_settings()
     await callback.answer("Собеседник размучен!")
     try:
         await callback.message.edit_text("🟢 Собеседник размучен")
@@ -548,7 +651,7 @@ async def handle_direct_message(message: types.Message):
     if message.from_user.is_bot:
         return
     chat_id = message.chat.id
-    user_input = await extract_message_content(message)
+    user_input, is_voice = await extract_message_content(message)
     if not user_input:
         return
 
@@ -562,7 +665,7 @@ async def handle_direct_message(message: types.Message):
 
     await bot.send_chat_action(chat_id=chat_id, action="typing")
     reply = await ask_groq(user_input, chat_id, ELIZABETH_PROMPT_DIRECT, max_tokens=500)
-    await send_smart_response(chat_id, "", reply, is_direct=True)
+    await send_smart_response(chat_id, "", reply, is_direct=True, send_as_voice=is_voice)
 
 @dp.business_message()
 async def handle_business_message(message: types.Message):
@@ -579,7 +682,7 @@ async def handle_business_message(message: types.Message):
     is_guest = (message.from_user.id == chat_id)
     is_owner = not is_guest
 
-    user_input = await extract_message_content(message)
+    user_input, is_voice = await extract_message_content(message)
     if not user_input:
         return
 
@@ -604,6 +707,7 @@ async def handle_business_message(message: types.Message):
             return
         else:
             del muted_chats[chat_id]
+            save_settings()
 
     if is_guest and chat_id in blocked_guests:
         ban_until = blocked_guests[chat_id]
@@ -611,8 +715,16 @@ async def handle_business_message(message: types.Message):
             return
         else:
             del blocked_guests[chat_id]
+            save_settings()
 
-    check_chat_flood(chat_id, max_msgs=4, window_seconds=6)
+    # Проверка на флуд с авто-мутом
+    if is_guest and await check_chat_flood(chat_id, bus_id, max_msgs=4, window_seconds=6):
+        try:
+            await bot(DeleteBusinessMessages(business_connection_id=bus_id, message_ids=[msg_id]))
+        except Exception:
+            pass
+        return
+
     await bot.send_chat_action(chat_id=chat_id, action="typing", business_connection_id=bus_id)
     
     current_mode = nsfw_modes.get(chat_id, False)
@@ -628,7 +740,7 @@ async def handle_business_message(message: types.Message):
         base_prompt = ELIZABETH_PROMPT_GIRLFRIEND if is_female else ELIZABETH_PROMPT_BUSINESS_MALE
 
     reply = await ask_groq(user_input, chat_id, base_prompt, max_tokens=500)
-    await send_smart_response(chat_id, bus_id, reply, is_direct=False)
+    await send_smart_response(chat_id, bus_id, reply, is_direct=False, send_as_voice=is_voice)
 
 async def main():
     if not BOT_TOKEN:
