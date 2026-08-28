@@ -426,10 +426,10 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
 
         if duration_minutes:
             muted_chats[chat_id] = time.time() + (duration_minutes * 60)
-            notice_text = f"❌ Собеседник в муте на {duration_minutes} мин.\n\nЧтобы размутить напиши unmute"
+            notice_text = f"❌ Собеседник в муте на {duration_minutes} мин."
         else:
             muted_chats[chat_id] = float('inf')
-            notice_text = "🔇 Собеседник в муте навсегда\n\nЧтобы размутить напиши unmute"
+            notice_text = "🔇 Собеседник в муте навсегда"
 
         unmute_keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
