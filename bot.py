@@ -426,9 +426,9 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
     lower_text = user_input.lower().strip()
     is_direct = not bool(bus_id)
 
-    public_commands = ["!игра", "!тапалка", "/game", "!эли игра"]
+    public_commands = ["игра", "тапалка", "!игра", "!тапалка", "/game", "!эли игра"]
     
-    if not is_owner and not lower_text.startswith("!статус") and lower_text not in public_commands:
+    if not is_owner and not lower_text.startswith("статус") and not lower_text.startswith("!статус") and lower_text not in public_commands:
         return False
 
     if lower_text in public_commands:
@@ -436,7 +436,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="🐹 Играть в кликер", 
+                        text="🐹 Открыть игру", 
                         url=GAME_URL
                     )
                 ]
@@ -446,7 +446,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         await send_smart_response(chat_id, bus_id, msg_text, is_direct=is_direct, reply_markup=keyboard)
         return True
 
-    elif lower_text.startswith("!мут") or lower_text.startswith("!эли мут"):
+    elif lower_text.startswith("мут") or lower_text.startswith("!мут") or lower_text.startswith("!эли мут"):
         parts = user_input.split()
         duration_minutes = None
         if len(parts) > 2:
@@ -458,21 +458,32 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
 
         if duration_minutes:
             muted_chats[chat_id] = time.time() + (duration_minutes * 60)
-            notice_text = f"❌ Вы больше не можете писать. (Мут на {duration_minutes} мин.)"
+            notice_text = f"❌ Собеседник в муте на {duration_minutes} мин.\n\nЧтобы размутить нажми кнопку или напиши unmute"
         else:
             muted_chats[chat_id] = float('inf')
-            notice_text = "❌ Вы больше не можете писать. (Мут навсегда)"
+            notice_text = "🔇 Собеседник в муте навсегда\n\nЧтобы размутить нажми кнопку или напиши unmute"
 
-        await send_smart_response(chat_id, bus_id, notice_text, is_direct=is_direct)
+        unmute_kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Размутить", callback_data="el_unmute_guest")]
+            ]
+        )
+        await send_smart_response(chat_id, bus_id, notice_text, is_direct=is_direct, reply_markup=unmute_kb)
         return True
 
-    elif lower_text in ["!анмут", "!эли анмут", "!размут", "!эли размут"]:
+    elif lower_text in ["анмут", "unmute", "размут", "!анмут", "!эли анмут", "!размут", "!эли размут"]:
         muted_chats.pop(chat_id, None)
-        await send_smart_response(chat_id, bus_id, "🔊 Мут снят.", is_direct=is_direct)
+        notice_text = "🟢 Режим АнтиМут включён\n\nЧтобы выключить нажмите кнопку или напиши unmutime"
+        unmute_kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Выключить", callback_data="el_mute_guest")]
+            ]
+        )
+        await send_smart_response(chat_id, bus_id, notice_text, is_direct=is_direct, reply_markup=unmute_kb)
         return True
 
-    elif lower_text.startswith("!спам") or lower_text.startswith("!эли спам"):
-        parts = user_input.split(maxsplit=3 if lower_text.startswith("!эли") else 2)
+    elif lower_text.startswith("спам") or lower_text.startswith("!спам") or lower_text.startswith("!эли спам"):
+        parts = user_input.split(maxsplit=3)
         if chat_id in active_spams:
             active_spams[chat_id].cancel()
             del active_spams[chat_id]
@@ -496,7 +507,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
             await send_smart_response(chat_id, bus_id, "⚠️ Укажи текст для спама.", is_direct=is_direct)
         return True
 
-    elif lower_text in ["!стопспам", "!эли стопспам"]:
+    elif lower_text in ["стопспам", "!стопспам", "!эли стопспам"]:
         if chat_id in active_spams:
             active_spams[chat_id].cancel()
             del active_spams[chat_id]
@@ -505,7 +516,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
             await send_smart_response(chat_id, bus_id, "ℹ️ Активного спама нет.", is_direct=is_direct)
         return True
 
-    elif lower_text in ["!статус", "!эли статус"]:
+    elif lower_text in ["статус", "!статус", "!эли статус"]:
         guest_status = "🟢 Свободен"
         if chat_id in muted_chats: guest_status = "🔇 В муте"
         elif chat_id in blocked_guests: guest_status = "🔴 В бане"
@@ -526,37 +537,37 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         await send_smart_response(chat_id, bus_id, status_msg, is_direct=is_direct, reply_markup=markup)
         return True
 
-    elif lower_text in ["!эли пошлый", "!эли пошл", "!эли полость"]:
+    elif lower_text in ["эли пошлый", "!эли пошлый", "!эли пошл"]:
         nsfw_modes[chat_id] = "nsfw"
         markup = get_owner_control_keyboard(chat_id) if is_owner else None
         await send_smart_response(chat_id, bus_id, "🔥 Пошлый режим активирован!", is_direct=is_direct, reply_markup=markup)
         return True
 
-    elif lower_text in ["!эли строгий", "!эли строго", "!эли токсик"]:
+    elif lower_text in ["эли строгий", "!эли строгий", "!эли строго"]:
         nsfw_modes[chat_id] = "strict"
         markup = get_owner_control_keyboard(chat_id) if is_owner else None
         await send_smart_response(chat_id, bus_id, "⚡ Строгий режим активирован!", is_direct=is_direct, reply_markup=markup)
         return True
 
-    elif lower_text in ["!эли норма", "!эли норм"]:
+    elif lower_text in ["эли норма", "!эли норма", "!эли норм"]:
         nsfw_modes[chat_id] = False
         markup = get_owner_control_keyboard(chat_id) if is_owner else None
         await send_smart_response(chat_id, bus_id, "❄️ Обычный режим возвращен.", is_direct=is_direct, reply_markup=markup)
         return True
 
-    elif lower_text in ["!эли вкл", "/bot_on"]:
+    elif lower_text in ["эли вкл", "!эли вкл", "/bot_on"]:
         active_chats[chat_id] = True
         markup = get_owner_control_keyboard(chat_id) if is_owner else None
         await send_smart_response(chat_id, bus_id, "Элизабет в сети", is_direct=is_direct, reply_markup=markup)
         return True
 
-    elif lower_text in ["!эли выкл", "/bot_off"]:
+    elif lower_text in ["эли выкл", "!эли выкл", "/bot_off"]:
         active_chats[chat_id] = False
         markup = get_owner_control_keyboard(chat_id) if is_owner else None
         await send_smart_response(chat_id, bus_id, "Элизабет выключена", is_direct=is_direct, reply_markup=markup)
         return True
 
-    elif lower_text in ["!эли сброс", "!эли кэш"]:
+    elif lower_text in ["эли сброс", "!эли сброс", "!эли кэш"]:
         user_histories.pop(chat_id, None)
         save_histories(user_histories)
         markup = get_owner_control_keyboard(chat_id) if is_owner else None
@@ -608,6 +619,22 @@ async def handle_inline_buttons(callback: types.CallbackQuery):
         except Exception:
             pass
 
+    elif data == "el_unmute_guest":
+        muted_chats.pop(chat_id, None)
+        await callback.answer("Собеседник размучен!")
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+
+    elif data == "el_mute_guest":
+        muted_chats[chat_id] = float('inf')
+        await callback.answer("Собеседник снова в муте!")
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+
     elif data == "el_status":
         guest_status = "🟢 Свободен"
         if chat_id in muted_chats: guest_status = "🔇 В муте"
@@ -642,9 +669,8 @@ async def handle_direct_message(message: types.Message):
         await send_smart_response(chat_id, "", "Привет, Кирито! Я на связи...", is_direct=True, reply_markup=get_owner_control_keyboard(chat_id))
         return
 
-    if user_input.startswith("!") or user_input.startswith("/"):
-        if await process_bot_command(message, user_input, is_owner=True, bus_id=""):
-            return
+    if await process_bot_command(message, user_input, is_owner=True, bus_id=""):
+        return
 
     await bot.send_chat_action(chat_id=chat_id, action="typing")
     reply = await ask_groq(user_input, chat_id, ELIZABETH_PROMPT_DIRECT, max_tokens=500)
@@ -669,14 +695,13 @@ async def handle_business_message(message: types.Message):
     if not user_input:
         return
 
-    if user_input.startswith("!") or user_input.startswith("/"):
-        if await process_bot_command(message, user_input, is_owner=is_owner, bus_id=bus_id):
-            if is_owner:
-                try:
-                    await bot(DeleteBusinessMessages(business_connection_id=bus_id, message_ids=[msg_id]))
-                except Exception:
-                    pass
-            return
+    if await process_bot_command(message, user_input, is_owner=is_owner, bus_id=bus_id):
+        if is_owner:
+            try:
+                await bot(DeleteBusinessMessages(business_connection_id=bus_id, message_ids=[msg_id]))
+            except Exception:
+                pass
+        return
 
     if not active_chats.get(chat_id, True) or is_owner:
         return
