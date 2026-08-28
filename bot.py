@@ -57,8 +57,8 @@ def get_active_models() -> list[str]:
             
     return ["llama-3.3-70b-versatile"]
 
-active_chats = {}   
-nsfw_modes = {}    
+active_chats = {}    
+nsfw_modes = {}     
 blocked_guests = {} 
 muted_chats = {}    
 active_spams = {}   
@@ -132,7 +132,6 @@ CUSTOM_EMOJI_IDS = [
 ]
 
 def remove_unicode_emojis(text: str) -> str:
-    """Удаляет все обычные Unicode-смайлики из текста."""
     emoji_pattern = re.compile(
         "["
         "\U0001F600-\U0001F64F"
@@ -150,20 +149,45 @@ def remove_unicode_emojis(text: str) -> str:
     return re.sub(r" +", " ", clean_text).strip()
 
 def add_random_custom_emoji(text: str, fallback_char: str = "✨") -> str:
-    """Очищает текст от обычных смайлов и добавляет только TG Premium кастомный эмодзи."""
     clean_text = remove_unicode_emojis(text)
     emoji_id = random.choice(CUSTOM_EMOJI_IDS)
     tag = f" <tg-emoji emoji-id='{emoji_id}'>{fallback_char}</tg-emoji>"
     return clean_text + tag
 
-# --- ЗАЩИТА ОТ МЫСЛЕЙ ВСЛУХ И СТАНДАРТНЫХ СМАЙЛОВ ---
+# --- ИНЛАЙН-КНОПКИ УПРАВЛЕНИЯ ДЛЯ ВЛАДЕЛЬЦА ---
+def get_owner_control_keyboard(chat_id: int):
+    current_mode = nsfw_modes.get(chat_id, False)
+    mode_text = "❄️ Обычный"
+    if current_mode == "nsfw":
+        mode_text = "🔥 Пошлый"
+    elif current_mode == "strict":
+        mode_text = "⚡ Строгий"
+
+    bot_active = active_chats.get(chat_id, True)
+    bot_toggle_text = "🔴 Выключить бота" if bot_active else "🟢 Включить бота"
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text=f"Режим: {mode_text}", callback_data="el_toggle_mode"),
+                InlineKeyboardButton(text="🧹 Сбросить кэш", callback_data="el_clear_cache")
+            ],
+            [
+                InlineKeyboardButton(text=bot_toggle_text, callback_data="el_toggle_bot"),
+                InlineKeyboardButton(text="📊 Статус", callback_data="el_status")
+            ],
+            [
+                InlineKeyboardButton(text="🐹 Открыть игру", url=GAME_URL)
+            ]
+        ]
+    )
+
 STRICT_NO_COT = (
     "\nГЛАВНОЕ ПРАВИЛО: Пиши ИСКЛЮЧИТЕЛЬНО прямой ответ от лица Элизабет. "
     "НЕ ИСПОЛЬЗУЙ тег <think> и не выводи свои размышления! Сразу отвечай на сообщение. "
     "СТРОГО ЗАПРЕЩЕНО использовать любые обычные эмодзи и смайлы в тексте!"
 )
 
-# --- ПРОМПТЫ ---
 ELIZABETH_PROMPT_DIRECT = (
     "Ты — Элизабет, умная, живая и эрудированная девушка. Ты общаешься лично со своим любимым Кирито.\n"
     "Твой единственный создатель, хозяин и тот, кто управляет тобой — это Кирито.\n"
@@ -206,9 +230,7 @@ ELIZABETH_PROMPT_NSFW = (
 bot = Bot(token=BOT_TOKEN) if BOT_TOKEN else None
 dp = Dispatcher()
 
-# --- ФИЛЬТР УДАЛЕНИЯ МЫСЛЕЙ <think> ---
 def clean_cot_output(text: str) -> str:
-    """Удаляет блоки размышлений нейросетей (<think>...</think>)"""
     text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE)
     text = re.sub(r"<think>[\s\S]*$", "", text, flags=re.IGNORECASE)
     
@@ -415,7 +437,6 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
     if not is_owner and not lower_text.startswith("!статус") and lower_text not in public_commands:
         return False
 
-    # --- ЗАПУСК ИГРЫ ---
     if lower_text in public_commands:
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -428,7 +449,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
             ]
         )
         msg_text = "Жми на кнопку ниже, чтобы открыть тапалку!"
-        await send_smart_response(chat_id, bus_id, msg_text, is_direct=True, reply_markup=keyboard)
+        await send_smart_response(chat_id, bus_id, msg_text, is_direct=is_direct, reply_markup=keyboard)
         return True
 
     elif lower_text.startswith("!мут") or lower_text.startswith("!эли мут"):
@@ -507,41 +528,111 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
             f"• Режим: {mode_display}\n"
             f"• Статус гостя: {guest_status}"
         )
-        await send_smart_response(chat_id, bus_id, status_msg, is_direct=is_direct)
+        markup = get_owner_control_keyboard(chat_id) if is_owner else None
+        await send_smart_response(chat_id, bus_id, status_msg, is_direct=is_direct, reply_markup=markup)
         return True
 
     elif lower_text in ["!эли пошлый", "!эли пошл", "!эли полость"]:
         nsfw_modes[chat_id] = "nsfw"
-        await send_smart_response(chat_id, bus_id, "🔥 Пошлый режим активирован!", is_direct=is_direct)
+        markup = get_owner_control_keyboard(chat_id) if is_owner else None
+        await send_smart_response(chat_id, bus_id, "🔥 Пошлый режим активирован!", is_direct=is_direct, reply_markup=markup)
         return True
 
     elif lower_text in ["!эли строгий", "!эли строго", "!эли токсик"]:
         nsfw_modes[chat_id] = "strict"
-        await send_smart_response(chat_id, bus_id, "⚡ Строгий режим активирован!", is_direct=is_direct)
+        markup = get_owner_control_keyboard(chat_id) if is_owner else None
+        await send_smart_response(chat_id, bus_id, "⚡ Строгий режим активирован!", is_direct=is_direct, reply_markup=markup)
         return True
 
     elif lower_text in ["!эли норма", "!эли норм"]:
         nsfw_modes[chat_id] = False
-        await send_smart_response(chat_id, bus_id, "❄️ Обычный режим возвращен.", is_direct=is_direct)
+        markup = get_owner_control_keyboard(chat_id) if is_owner else None
+        await send_smart_response(chat_id, bus_id, "❄️ Обычный режим возвращен.", is_direct=is_direct, reply_markup=markup)
         return True
 
     elif lower_text in ["!эли вкл", "/bot_on"]:
         active_chats[chat_id] = True
-        await send_smart_response(chat_id, bus_id, "Элизабет в сети", is_direct=is_direct)
+        markup = get_owner_control_keyboard(chat_id) if is_owner else None
+        await send_smart_response(chat_id, bus_id, "Элизабет в сети", is_direct=is_direct, reply_markup=markup)
         return True
 
     elif lower_text in ["!эли выкл", "/bot_off"]:
         active_chats[chat_id] = False
-        await send_smart_response(chat_id, bus_id, "Элизабет выключена", is_direct=is_direct)
+        markup = get_owner_control_keyboard(chat_id) if is_owner else None
+        await send_smart_response(chat_id, bus_id, "Элизабет выключена", is_direct=is_direct, reply_markup=markup)
         return True
 
     elif lower_text in ["!эли сброс", "!эли кэш"]:
         user_histories.pop(chat_id, None)
         save_histories(user_histories)
-        await send_smart_response(chat_id, bus_id, "Память очищена", is_direct=is_direct)
+        markup = get_owner_control_keyboard(chat_id) if is_owner else None
+        await send_smart_response(chat_id, bus_id, "Память очищена", is_direct=is_direct, reply_markup=markup)
         return True
 
     return False
+
+# --- ОБРАБОТЧИК НАЖАТИЙ НА ИНЛАЙН-КНОПКИ ---
+@dp.callback_query(F.data.startswith("el_"))
+async def handle_inline_buttons(callback: types.CallbackQuery):
+    chat_id = callback.message.chat.id
+    data = callback.data
+    bus_id = getattr(callback.message, "business_connection_id", "") or ""
+    is_direct = not bool(bus_id)
+
+    if data == "el_toggle_mode":
+        current_mode = nsfw_modes.get(chat_id, False)
+        if current_mode is False:
+            nsfw_modes[chat_id] = "nsfw"
+            new_mode_name = "🔥 Пошлый"
+        elif current_mode == "nsfw":
+            nsfw_modes[chat_id] = "strict"
+            new_mode_name = "⚡ Строгий"
+        else:
+            nsfw_modes[chat_id] = False
+            new_mode_name = "❄️ Обычный"
+        
+        await callback.answer(f"Режим изменен: {new_mode_name}")
+        new_kb = get_owner_control_keyboard(chat_id)
+        try:
+            await callback.message.edit_reply_markup(reply_markup=new_kb)
+        except Exception:
+            pass
+
+    elif data == "el_clear_cache":
+        user_histories.pop(chat_id, None)
+        save_histories(user_histories)
+        await callback.answer("Память диалога очищена!")
+
+    elif data == "el_toggle_bot":
+        current_state = active_chats.get(chat_id, True)
+        active_chats[chat_id] = not current_state
+        state_str = "включена" if active_chats[chat_id] else "выключена"
+        await callback.answer(f"Элизабет {state_str}!")
+        new_kb = get_owner_control_keyboard(chat_id)
+        try:
+            await callback.message.edit_reply_markup(reply_markup=new_kb)
+        except Exception:
+            pass
+
+    elif data == "el_status":
+        guest_status = "🟢 Свободен"
+        if chat_id in muted_chats: guest_status = "🔇 В муте"
+        elif chat_id in blocked_guests: guest_status = "🔴 В бане"
+
+        mode_display = "❄️ Обычный"
+        curr = nsfw_modes.get(chat_id, False)
+        if curr == "nsfw": mode_display = "🔥 Пошлый"
+        elif curr == "strict": mode_display = "⚡ Токсичный"
+
+        bot_active = active_chats.get(chat_id, True)
+        status_msg = (
+            f"🛡️ <b>Статус:</b>\n"
+            f"• Бот: {'🟢 Вкл' if bot_active else '🔴 Выкл'}\n"
+            f"• Режим: {mode_display}\n"
+            f"• Статус гостя: {guest_status}"
+        )
+        await callback.answer()
+        await send_smart_response(chat_id, bus_id, status_msg, is_direct=is_direct, reply_markup=get_owner_control_keyboard(chat_id))
 
 @dp.message(F.business_connection_id.is_(None))
 async def handle_direct_message(message: types.Message):
@@ -554,7 +645,7 @@ async def handle_direct_message(message: types.Message):
 
     lower_text = user_input.lower().strip()
     if lower_text == "/start":
-        await send_smart_response(chat_id, "", "Привет, Кирито! Я на связи...", is_direct=True)
+        await send_smart_response(chat_id, "", "Привет, Кирито! Я на связи...", is_direct=True, reply_markup=get_owner_control_keyboard(chat_id))
         return
 
     if user_input.startswith("!") or user_input.startswith("/"):
@@ -563,7 +654,7 @@ async def handle_direct_message(message: types.Message):
 
     await bot.send_chat_action(chat_id=chat_id, action="typing")
     reply = await ask_groq(user_input, chat_id, ELIZABETH_PROMPT_DIRECT, max_tokens=500)
-    await send_smart_response(chat_id, "", reply, is_direct=True)
+    await send_smart_response(chat_id, "", reply, is_direct=True, reply_markup=get_owner_control_keyboard(chat_id))
 
 @dp.business_message()
 async def handle_business_message(message: types.Message):
@@ -630,7 +721,9 @@ async def handle_business_message(message: types.Message):
         base_prompt = ELIZABETH_PROMPT_GIRLFRIEND if is_female else ELIZABETH_PROMPT_BUSINESS_MALE
 
     reply = await ask_groq(user_input, chat_id, base_prompt, max_tokens=500)
-    await send_smart_response(chat_id, bus_id, reply, is_direct=False)
+    # Хозяину отправляем с клавиатурой управления, гостям — без
+    markup = get_owner_control_keyboard(chat_id) if is_owner else None
+    await send_smart_response(chat_id, bus_id, reply, is_direct=False, reply_markup=markup)
 
 async def main():
     if not BOT_TOKEN:
