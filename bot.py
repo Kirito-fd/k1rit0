@@ -458,28 +458,18 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
 
         if duration_minutes:
             muted_chats[chat_id] = time.time() + (duration_minutes * 60)
-            notice_text = f"❌ Собеседник в муте на {duration_minutes} мин.\n\nЧтобы размутить нажми кнопку или напиши unmute"
+            notice_text = f"❌ Собеседник в муте на {duration_minutes} мин.\n\nЧтобы размутить напиши unmute"
         else:
             muted_chats[chat_id] = float('inf')
-            notice_text = "🔇 Собеседник в муте навсегда\n\nЧтобы размутить нажми кнопку или напиши unmute"
+            notice_text = "🔇 Собеседник в муте навсегда\n\nЧтобы размутить напиши unmute"
 
-        unmute_kb = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="Размутить", callback_data="el_unmute_guest")]
-            ]
-        )
-        await send_smart_response(chat_id, bus_id, notice_text, is_direct=is_direct, reply_markup=unmute_kb)
+        await send_smart_response(chat_id, bus_id, notice_text, is_direct=is_direct, reply_markup=None)
         return True
 
     elif lower_text in ["анмут", "unmute", "размут", "!анмут", "!эли анмут", "!размут", "!эли размут"]:
         muted_chats.pop(chat_id, None)
-        notice_text = "🟢 Режим АнтиМут включён\n\nЧтобы выключить нажмите кнопку или напиши unmutime"
-        unmute_kb = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="Выключить", callback_data="el_mute_guest")]
-            ]
-        )
-        await send_smart_response(chat_id, bus_id, notice_text, is_direct=is_direct, reply_markup=unmute_kb)
+        notice_text = "🟢 Собеседник размучен"
+        await send_smart_response(chat_id, bus_id, notice_text, is_direct=is_direct, reply_markup=None)
         return True
 
     elif lower_text.startswith("спам") or lower_text.startswith("!спам") or lower_text.startswith("!эли спам"):
@@ -616,22 +606,6 @@ async def handle_inline_buttons(callback: types.CallbackQuery):
         new_kb = get_owner_control_keyboard(chat_id)
         try:
             await callback.message.edit_reply_markup(reply_markup=new_kb)
-        except Exception:
-            pass
-
-    elif data == "el_unmute_guest":
-        muted_chats.pop(chat_id, None)
-        await callback.answer("Собеседник размучен!")
-        try:
-            await callback.message.delete()
-        except Exception:
-            pass
-
-    elif data == "el_mute_guest":
-        muted_chats[chat_id] = float('inf')
-        await callback.answer("Собеседник снова в муте!")
-        try:
-            await callback.message.delete()
         except Exception:
             pass
 
