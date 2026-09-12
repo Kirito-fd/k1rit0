@@ -250,7 +250,6 @@ async def check_chat_flood(chat_id: int, bus_id: str, max_msgs=4, window_seconds
     user_message_times[chat_id].append(now)
 
     if len(user_message_times[chat_id]) > max_msgs:
-        # Авто-мут на 5 минут при флуде
         muted_chats[chat_id] = now + 300
         save_settings()
         
@@ -309,8 +308,6 @@ async def extract_message_content(message: types.Message) -> tuple[str, bool]:
         if os.path.exists(local_path):
             os.remove(local_path)
         return transcribed, is_voice_msg
-    if message.sticker:
-        return "Собеседник отправил стикер.", False
     if message.photo:
         return "Собеседник отправил картинку.", False
     if message.video:
@@ -327,7 +324,6 @@ async def send_smart_response(chat_id: int, bus_id: str, reply_text: str, is_dir
         return
     recent_sent_messages[key] = now
 
-    # Если собеседник прислал голосовое, отвечаем голосом (TTS)
     if send_as_voice:
         try:
             tts_text = remove_unicode_emojis(reply_text)
@@ -480,9 +476,8 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
     lower_text = user_input.lower().strip()
     is_direct = not bool(bus_id)
 
-    public_commands = ["игра", "тапалка", "!игра", "!тапалка", "/game", "!эли игра"]
+    public_commands = ["игра", "тапалка", "!игра", "!тапалка", "/game", "!рид игра"]
     
-    # Мини-игра «Камень, ножницы, бумага» (доступна всем)
     if lower_text.startswith("кнб ") or lower_text.startswith("!кнб "):
         user_choice = lower_text.split()[1] if len(lower_text.split()) > 1 else ""
         choices = ["камень", "ножницы", "бумага"]
@@ -511,7 +506,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         await send_smart_response(chat_id, bus_id, msg_text, is_direct=is_direct)
         return True
 
-    elif lower_text.startswith("мут") or lower_text.startswith("!мут") or lower_text.startswith("!эли мут"):
+    elif lower_text.startswith("мут") or lower_text.startswith("!мут") or lower_text.startswith("!рид мут"):
         parts = user_input.split()
         duration_minutes = None
         if len(parts) > 2:
@@ -537,14 +532,14 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         await send_smart_response(chat_id, bus_id, notice_text, is_direct=is_direct, reply_markup=unmute_keyboard)
         return True
 
-    elif lower_text in ["анмут", "unmute", "размут", "!анмут", "!эли анмут", "!размут", "!эли размут"]:
+    elif lower_text in ["анмут", "unmute", "размут", "!анмут", "!рид анмут", "!размут", "!рид размут"]:
         muted_chats.pop(chat_id, None)
         save_settings()
         notice_text = "🟢 Собеседник размучен"
         await send_smart_response(chat_id, bus_id, notice_text, is_direct=is_direct)
         return True
 
-    elif lower_text.startswith("спам") or lower_text.startswith("!спам") or lower_text.startswith("!эли спам"):
+    elif lower_text.startswith("спам") or lower_text.startswith("!спам") or lower_text.startswith("!рид спам"):
         parts = user_input.split(maxsplit=3)
         if chat_id in active_spams:
             active_spams[chat_id].cancel()
@@ -569,7 +564,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
             await send_smart_response(chat_id, bus_id, "⚠️ Укажи текст для спама.", is_direct=is_direct)
         return True
 
-    elif lower_text in ["стопспам", "!стопспам", "!эли стопспам"]:
+    elif lower_text in ["стопспам", "!стопспам", "!рид стопспам"]:
         if chat_id in active_spams:
             active_spams[chat_id].cancel()
             del active_spams[chat_id]
@@ -578,7 +573,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
             await send_smart_response(chat_id, bus_id, "ℹ️ Активного спама нет.", is_direct=is_direct)
         return True
 
-    elif lower_text in ["статус", "!статус", "!эли статус"]:
+    elif lower_text in ["статус", "!статус", "!рид статус"]:
         guest_status = "🟢 Свободен"
         if chat_id in muted_chats: guest_status = "🔇 В муте"
         elif chat_id in blocked_guests: guest_status = "🔴 В бане"
@@ -598,35 +593,35 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         await send_smart_response(chat_id, bus_id, status_msg, is_direct=is_direct)
         return True
 
-    elif lower_text in ["эли пошлый", "!эли пошлый", "!эли пошл"]:
+    elif lower_text in ["рид пошлый", "!рид пошлый", "!рид пошл"]:
         nsfw_modes[chat_id] = "nsfw"
         save_settings()
         await send_smart_response(chat_id, bus_id, "🔥 Пошлый режим активирован!", is_direct=is_direct)
         return True
 
-    elif lower_text in ["эли строгий", "!эли строгий", "!эли строго"]:
+    elif lower_text in ["рид строгий", "!рид строгий", "!рид строго"]:
         nsfw_modes[chat_id] = "strict"
         save_settings()
         await send_smart_response(chat_id, bus_id, "⚡ Строгий режим активирован!", is_direct=is_direct)
         return True
 
-    elif lower_text in ["эли норма", "!эли норма", "!эли норм"]:
+    elif lower_text in ["рид норма", "!рид норма", "!рид норм"]:
         nsfw_modes.pop(chat_id, None)
         save_settings()
         await send_smart_response(chat_id, bus_id, "❄️ Обычный режим возвращен.", is_direct=is_direct)
         return True
 
-    elif lower_text in ["эли вкл", "!эли вкл", "/bot_on"]:
+    elif lower_text in ["рид вкл", "!рид вкл", "/bot_on"]:
         active_chats[chat_id] = True
         await send_smart_response(chat_id, bus_id, "Элизабет в сети", is_direct=is_direct)
         return True
 
-    elif lower_text in ["эли выкл", "!эли выкл", "/bot_off"]:
+    elif lower_text in ["рид выкл", "!рид выкл", "/bot_off"]:
         active_chats[chat_id] = False
         await send_smart_response(chat_id, bus_id, "Элизабет выключена", is_direct=is_direct)
         return True
 
-    elif lower_text in ["эли сброс", "!эли сброс", "!эли кэш"]:
+    elif lower_text in ["рид сброс", "!рид сброс", "!рид кэш"]:
         user_histories.pop(chat_id, None)
         save_histories(user_histories)
         await send_smart_response(chat_id, bus_id, "Память очищена", is_direct=is_direct)
@@ -634,7 +629,6 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
 
     return False
 
-# --- ОБРАБОТЧИК НАЖАТИЙ НА КНОПКУ РАЗМУТА ---
 @dp.callback_query(F.data == "el_unmute_direct")
 async def handle_unmute_callback(callback: types.CallbackQuery):
     chat_id = callback.message.chat.id
@@ -717,7 +711,6 @@ async def handle_business_message(message: types.Message):
             del blocked_guests[chat_id]
             save_settings()
 
-    # Проверка на флуд с авто-мутом
     if is_guest and await check_chat_flood(chat_id, bus_id, max_msgs=4, window_seconds=6):
         try:
             await bot(DeleteBusinessMessages(business_connection_id=bus_id, message_ids=[msg_id]))
