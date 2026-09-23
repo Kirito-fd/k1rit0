@@ -5,10 +5,11 @@ import time
 import datetime
 import json
 import re
+import urllib.request
+from pathlib import Path
 import aiohttp
 import torch
 import soundfile as sf
-import torch.hub
 from groq import Groq, APIError
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
@@ -20,22 +21,17 @@ from aiohttp import web
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 GAME_URL = "https://kirito-fd.github.io/k1rit0/"
 
-# --- ИНИЦИАЛИЗАЦИЯ НЕЙРОСЕТИ SILERO TTS ---
+# --- ИНИЦИАЛИЗАЦИЯ НЕЙРОСЕТИ SILERO TTS (ПРЯМАЯ ЗАГРУЗКА БЕЗ GITHUB) ---
 device = torch.device('cpu')
 print("Загрузка нейросети Silero TTS...")
 
-# Принудительно добавляем репозиторий в доверенные списки torch.hub для предотвращения EOFError
-torch.hub._allowed_torch_repos = getattr(torch.hub, "_allowed_torch_repos", [])
-if "snakers4/silero-models" not in torch.hub._allowed_torch_repos:
-    torch.hub._allowed_torch_repos.append("snakers4/silero-models")
+model_file = Path("model.pt")
+if not model_file.exists():
+    print("Скачивание модели Silero TTS напрямую с официального сервера...")
+    url = "https://models.silero.models.ai/models/tts/ru/v3_1_ru.pt"
+    urllib.request.urlretrieve(url, model_file)
 
-silero_model, _ = torch.hub.load(
-    repo_or_dir='snakers4/silero-models',
-    model='silero_tts',
-    language='ru',
-    speaker='v3_1_ru',
-    trust_repo=True
-)
+silero_model = torch.package.PackageImporter(model_file).load_pickle("tts_models", "model")
 silero_model.to(device)
 print("Silero TTS успешно инициализирована.")
 
