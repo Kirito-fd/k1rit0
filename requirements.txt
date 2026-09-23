@@ -1,5 +1,4 @@
-aiogram
-aiohttp
+aiogram>=3.0.0
 groq
-torch
-soundfile
+aiohttp
+edge-tts
