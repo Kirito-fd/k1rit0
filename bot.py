@@ -8,6 +8,7 @@ import re
 import aiohttp
 import torch
 import soundfile as sf
+import torch.hub
 from groq import Groq, APIError
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
@@ -22,11 +23,18 @@ GAME_URL = "https://kirito-fd.github.io/k1rit0/"
 # --- ИНИЦИАЛИЗАЦИЯ НЕЙРОСЕТИ SILERO TTS ---
 device = torch.device('cpu')
 print("Загрузка нейросети Silero TTS...")
+
+# Принудительно добавляем репозиторий в доверенные списки torch.hub для предотвращения EOFError
+torch.hub._allowed_torch_repos = getattr(torch.hub, "_allowed_torch_repos", [])
+if "snakers4/silero-models" not in torch.hub._allowed_torch_repos:
+    torch.hub._allowed_torch_repos.append("snakers4/silero-models")
+
 silero_model, _ = torch.hub.load(
     repo_or_dir='snakers4/silero-models',
     model='silero_tts',
     language='ru',
-    speaker='v3_1_ru'
+    speaker='v3_1_ru',
+    trust_repo=True
 )
 silero_model.to(device)
 print("Silero TTS успешно инициализирована.")
