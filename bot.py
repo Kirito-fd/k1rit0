@@ -6,6 +6,8 @@ import datetime
 import json
 import re
 from pathlib import Path
+import urllib.request
+import ssl
 import aiohttp
 import torch
 import soundfile as sf
@@ -20,13 +22,20 @@ from aiohttp import web
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 GAME_URL = "https://kirito-fd.github.io/k1rit0/"
 
-# --- ИНИЦИАЛИЗАЦИЯ НЕЙРОСЕТИ SILERO TTS (ИЗ ЛОКАЛЬНОГО ФАЙЛА MODEL.PT) ---
+# --- АВТОМАТИЧЕСКАЯ ЗАГРУЗКА НЕЙРОСЕТИ SILERO TTS (С ОБХОДОМ SSL) ---
 device = torch.device('cpu')
 print("Загрузка нейросети Silero TTS...")
 
 model_file = Path("model.pt")
 if not model_file.exists():
-    print("КРИТИЧЕСКАЯ ОШИБКА: Файл 'model.pt' не найден в корневом каталоге репозитория!")
+    print("Скачивание модели Silero TTS напрямую с официального сервера...")
+    url = 'https://models.silero.models.ai/models/pytorch/v3_1_ru.pt'
+    
+    # Создаем контекст с отключенной проверкой SSL, чтобы Render не ругался
+    ssl_context = ssl._create_unverified_context()
+    with urllib.request.urlopen(url, context=ssl_context) as resp, open(model_file, 'wb') as f:
+        f.write(resp.read())
+    print("Модель Silero TTS успешно скачана.")
 
 silero_model = torch.package.PackageImporter(model_file).load_pickle("tts_models", "model")
 silero_model.to(device)
