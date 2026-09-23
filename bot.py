@@ -22,20 +22,40 @@ from aiohttp import web
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 GAME_URL = "https://kirito-fd.github.io/k1rit0/"
 
-# --- АВТОМАТИЧЕСКАЯ ЗАГРУЗКА НЕЙРОСЕТИ SILERO TTS (С ОБХОДОМ SSL) ---
+# --- АВТОМАТИЧЕСКАЯ ЗАГРУЗКА НЕЙРОСЕТИ SILERO TTS ---
 device = torch.device('cpu')
 print("Загрузка нейросети Silero TTS...")
 
 model_file = Path("model.pt")
 if not model_file.exists():
-    print("Скачивание модели Silero TTS напрямую с официального сервера...")
-    url = 'https://models.silero.models.ai/models/pytorch/v3_1_ru.pt'
+    print("Скачивание модели Silero TTS...")
+    urls = [
+        'https://models.silero.ai/models/tts/ru/v3_1_ru.pt',
+        'https://huggingface.co/snakers4/silero-models/resolve/main/models/tts/ru/v3_1_ru.pt'
+    ]
     
-    # Создаем контекст с отключенной проверкой SSL, чтобы Render не ругался
     ssl_context = ssl._create_unverified_context()
-    with urllib.request.urlopen(url, context=ssl_context) as resp, open(model_file, 'wb') as f:
-        f.write(resp.read())
-    print("Модель Silero TTS успешно скачана.")
+    download_success = False
+    
+    for url in urls:
+        try:
+            print(f"Попытка скачивания с {url}...")
+            req = urllib.request.Request(
+                url, 
+                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+            )
+            with urllib.request.urlopen(req, context=ssl_context, timeout=60) as resp, open(model_file, 'wb') as f:
+                f.write(resp.read())
+            print("Модель Silero TTS успешно скачана.")
+            download_success = True
+            break
+        except Exception as e:
+            print(f"Ошибка скачивания с {url}: {e}")
+            if model_file.exists():
+                os.remove(model_file)
+                
+    if not download_success:
+        raise RuntimeError("Критическая ошибка: Не удалось скачать модель Silero ни с одного из зеркал, сэр.")
 
 silero_model = torch.package.PackageImporter(model_file).load_pickle("tts_models", "model")
 silero_model.to(device)
