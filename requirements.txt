@@ -2,3 +2,5 @@ aiogram
 aiohttp
 groq
 gTTS
+torch
+soundfile
