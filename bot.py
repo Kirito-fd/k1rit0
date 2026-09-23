@@ -5,7 +5,6 @@ import time
 import datetime
 import json
 import re
-import urllib.request
 from pathlib import Path
 import aiohttp
 import torch
@@ -21,15 +20,13 @@ from aiohttp import web
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 GAME_URL = "https://kirito-fd.github.io/k1rit0/"
 
-# --- ИНИЦИАЛИЗАЦИЯ НЕЙРОСЕТИ SILERO TTS (ПРЯМАЯ ЗАГРУЗКА БЕЗ GITHUB) ---
+# --- ИНИЦИАЛИЗАЦИЯ НЕЙРОСЕТИ SILERO TTS (ИЗ ЛОКАЛЬНОГО ФАЙЛА MODEL.PT) ---
 device = torch.device('cpu')
 print("Загрузка нейросети Silero TTS...")
 
 model_file = Path("model.pt")
 if not model_file.exists():
-    print("Скачивание модели Silero TTS напрямую с официального сервера...")
-    url = "https://models.silero.models.ai/models/tts/ru/v3_1_ru.pt"
-    urllib.request.urlretrieve(url, model_file)
+    print("КРИТИЧЕСКАЯ ОШИБКА: Файл 'model.pt' не найден в корневом каталоге репозитория!")
 
 silero_model = torch.package.PackageImporter(model_file).load_pickle("tts_models", "model")
 silero_model.to(device)
