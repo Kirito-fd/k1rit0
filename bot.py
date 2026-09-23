@@ -5,12 +5,7 @@ import time
 import datetime
 import json
 import re
-from pathlib import Path
-import urllib.request
-import ssl
-import aiohttp
-import torch
-import soundfile as sf
+import edge_tts
 from groq import Groq, APIError
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
@@ -22,44 +17,8 @@ from aiohttp import web
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 GAME_URL = "https://kirito-fd.github.io/k1rit0/"
 
-# --- АВТОМАТИЧЕСКАЯ ЗАГРУЗКА НЕЙРОСЕТИ SILERO TTS ---
-device = torch.device('cpu')
-print("Загрузка нейросети Silero TTS...")
-
-model_file = Path("model.pt")
-if not model_file.exists():
-    print("Скачивание модели Silero TTS...")
-    urls = [
-        'https://models.silero.ai/models/tts/ru/v3_1_ru.pt',
-        'https://huggingface.co/snakers4/silero-models/resolve/main/models/tts/ru/v3_1_ru.pt'
-    ]
-    
-    ssl_context = ssl._create_unverified_context()
-    download_success = False
-    
-    for url in urls:
-        try:
-            print(f"Попытка скачивания с {url}...")
-            req = urllib.request.Request(
-                url, 
-                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-            )
-            with urllib.request.urlopen(req, context=ssl_context, timeout=60) as resp, open(model_file, 'wb') as f:
-                f.write(resp.read())
-            print("Модель Silero TTS успешно скачана.")
-            download_success = True
-            break
-        except Exception as e:
-            print(f"Ошибка скачивания с {url}: {e}")
-            if model_file.exists():
-                os.remove(model_file)
-                
-    if not download_success:
-        raise RuntimeError("Критическая ошибка: Не удалось скачать модель Silero ни с одного из зеркал, сэр.")
-
-silero_model = torch.package.PackageImporter(model_file).load_pickle("tts_models", "model")
-silero_model.to(device)
-print("Silero TTS успешно инициализирована.")
+# Нейроголос для Джарвиса (глубокий мужской голос)
+TTS_VOICE = "ru-RU-DmitryNeural"
 
 # --- УНИВЕРСАЛЬНЫЙ АВТОМАТИЧЕСКИЙ СБОР ВСЕХ КЛЮЧЕЙ GROQ ---
 GROQ_KEYS = [
@@ -337,16 +296,10 @@ async def send_smart_response(chat_id: int, bus_id: str, reply_text: str, is_dir
 
     if send_as_voice:
         try:
-            audio_path = f"response_{chat_id}.wav"
+            audio_path = f"response_{chat_id}.mp3"
+            communicate = edge_tts.Communicate(reply_text, TTS_VOICE)
+            await communicate.save(audio_path)
             
-            audio = silero_model.apply_text(
-                text=reply_text,
-                speaker='aidar',
-                sample_rate=48000,
-                put_accent=True,
-                put_yo=True
-            )
-            sf.write(audio_path, audio.numpy(), 48000)
             voice_file = FSInputFile(audio_path)
             
             if is_direct:
@@ -358,7 +311,7 @@ async def send_smart_response(chat_id: int, bus_id: str, reply_text: str, is_dir
                 os.remove(audio_path)
             return
         except Exception as e:
-            print(f"Ошибка локального синтеза речи Silero: {e}")
+            print(f"Ошибка синтеза речи Edge TTS: {e}")
 
     try:
         if is_direct:
@@ -524,7 +477,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
     elif lower_text in ["джарвис голос вкл", "!джарвис голос вкл", "голосовой режим вкл"]:
         voice_chat_modes[chat_id] = True
         save_settings()
-        await send_smart_response(chat_id, bus_id, "Интерактивный голосовой режим активирован. Теперь все мои ответы будут транслироваться голосом Silero, сэр.", is_direct=is_direct)
+        await send_smart_response(chat_id, bus_id, "Интерактивный голосовой режим активирован. Теперь все мои ответы будут транслироваться голосом, сэр.", is_direct=is_direct)
         return True
 
     elif lower_text in ["джарвис голос выкл", "!джарвис голос выкл", "голосовой режим выкл"]:
@@ -774,7 +727,7 @@ async def main():
     await start_web_server()
     asyncio.create_task(cleaner_background_task())
     await bot.delete_webhook(drop_pending_updates=True)
-    print("Искусственный интеллект Джарвис успешно запущен и готов к работе!")
+    print("Искусственный интеллект Джарвис успешно запущен в сверхлегком режиме!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
