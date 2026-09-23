@@ -6,7 +6,8 @@ import datetime
 import json
 import re
 import aiohttp
-from gtts import gTTS
+import torch
+import soundfile as sf
 from groq import Groq, APIError
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
@@ -17,6 +18,18 @@ from aiohttp import web
 # --- НАСТРОЙКИ ПЕРЕМЕННЫХ ---
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 GAME_URL = "https://kirito-fd.github.io/k1rit0/"
+
+# --- ИНИЦИАЛИЗАЦИЯ НЕЙРОСЕТИ SILERO TTS ---
+device = torch.device('cpu')
+print("Загрузка нейросети Silero TTS...")
+silero_model, _ = torch.hub.load(
+    repo_or_dir='snakers4/silero-models',
+    model='silero_tts',
+    language='ru',
+    speaker='v3_1_ru'
+)
+silero_model.to(device)
+print("Silero TTS успешно инициализирована.")
 
 # --- УНИВЕРСАЛЬНЫЙ АВТОМАТИЧЕСКИЙ СБОР ВСЕХ КЛЮЧЕЙ GROQ ---
 GROQ_KEYS = [
@@ -61,7 +74,7 @@ def get_active_models() -> list[str]:
 active_chats = {}    
 active_spams = {}   
 user_message_times = {}
-voice_chat_modes = {} # Режим постоянного голосового ответа для чатов
+voice_chat_modes = {} 
 
 processed_message_ids = set()
 recent_sent_messages = {}
@@ -294,21 +307,28 @@ async def send_smart_response(chat_id: int, bus_id: str, reply_text: str, is_dir
 
     if send_as_voice:
         try:
-            tts = gTTS(text=reply_text, lang='ru')
-            voice_path = f"response_{chat_id}.ogg"
-            tts.save(voice_path)
-            voice_file = FSInputFile(voice_path)
+            audio_path = f"response_{chat_id}.wav"
+            
+            audio = silero_model.apply_text(
+                text=reply_text,
+                speaker='aidar',
+                sample_rate=48000,
+                put_accent=True,
+                put_yo=True
+            )
+            sf.write(audio_path, audio.numpy(), 48000)
+            voice_file = FSInputFile(audio_path)
             
             if is_direct:
                 await bot.send_voice(chat_id=chat_id, voice=voice_file, reply_markup=reply_markup)
             else:
                 await bot.send_voice(chat_id=chat_id, voice=voice_file, business_connection_id=bus_id, reply_markup=reply_markup)
             
-            if os.path.exists(voice_path):
-                os.remove(voice_path)
+            if os.path.exists(audio_path):
+                os.remove(audio_path)
             return
         except Exception as e:
-            print(f"Ошибка синтеза речи: {e}")
+            print(f"Ошибка локального синтеза речи Silero: {e}")
 
     try:
         if is_direct:
@@ -474,7 +494,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
     elif lower_text in ["джарвис голос вкл", "!джарвис голос вкл", "голосовой режим вкл"]:
         voice_chat_modes[chat_id] = True
         save_settings()
-        await send_smart_response(chat_id, bus_id, "Интерактивный голосовой режим активирован. Теперь все мои ответы будут транслироваться голосом, сэр.", is_direct=is_direct)
+        await send_smart_response(chat_id, bus_id, "Интерактивный голосовой режим активирован. Теперь все мои ответы будут транслироваться голосом Silero, сэр.", is_direct=is_direct)
         return True
 
     elif lower_text in ["джарвис голос выкл", "!джарвис голос выкл", "голосовой режим выкл"]:
@@ -639,7 +659,6 @@ async def handle_direct_message(message: types.Message):
     await bot.send_chat_action(chat_id=chat_id, action="typing")
     reply = await ask_groq(user_input, chat_id, JARVIS_PROMPT_DIRECT, max_tokens=500)
     
-    # Если включен режим голосового чата ИЛИ пользователь прислал голосовое сообщение — отвечаем голосом
     should_send_voice = is_voice or voice_chat_modes.get(chat_id, False)
     await send_smart_response(chat_id, "", reply, is_direct=True, send_as_voice=should_send_voice)
 
