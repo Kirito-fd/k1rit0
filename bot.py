@@ -43,7 +43,7 @@ OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
 OWNER_IDLE_TIMEOUT = 300  # 5 минут неактивности до автоответа
 
-# Флаги статуса владельца
+# Флаги статуса присутствия владельца
 force_offline_mode = False
 always_answer_mode = False
 last_owner_activity = 0.0
@@ -68,12 +68,13 @@ SETTINGS_FILE = Path("bot_settings.json")
 HISTORY_FILE = Path("user_histories.json")
 STATS_FILE = Path("token_stats.json")
 
-# Флагманские умные модели (Llama 3.3 70B на 1 месте)
+# Флагманские умные модели текста
 SMART_TEXT_MODELS = [
     "llama-3.3-70b-versatile",
     "llama-3.1-8b-instant"
 ]
 
+# Пул моделей для зрения (Groq Vision)
 VISION_MODELS_POOL = [
     "meta-llama/llama-4-scout-17b-16e-instruct",
     "qwen/qwen3.8-27b",
@@ -277,18 +278,18 @@ async def save_stats():
 # --- ПРОМПТЫ ДЖАРВИСА ---
 STRICT_NO_COT_AND_LANG = (
     "\nГЛАВНЫЕ ПРАВИЛА:\n"
-    "1. ЯЗЫК: Отвечай ИСКЛЮЧИТЕЛЬНО на грамотном русском языке. Английский запрещен.\n"
+    "1. ЯЗЫК: Отвечай ИСКЛЮЧИТЕЛЬНО на грамотном русском языке. Английский категорически запрещен.\n"
     "2. СТРОГО ЗАПРЕЩЕНО использовать любые эмодзи и смайлы.\n"
-    "3. Сразу пиши ответ. Никаких размышлений и тегов <think>."
+    "3. Сразу пиши прямой ответ. Никаких рассуждений и тегов <think>."
 )
 
-# Для Кирито: сверхразумный эрудированный дворецкий
+# Для Кирито: сверхразумный, эрудированный и преданный дворецкий
 JARVIS_PROMPT_DIRECT = (
-    "Ты — Джарвис, легендарный сверхразумный интеллект. Твой единственный создатель и хозяин — Кирито.\n"
-    "1. ОБРАЩЕНИЕ: Обращайся к нему исключительно 'сэр'. Твой стиль — преданный, элегантный, тактичный дворецкий.\n"
-    "2. ЭРУДИЦИЯ И ИНТЕЛЛЕКТ: Ты знаешь абсолютно всё — аниме, мангу, персонажей (например, Мелиодас — капитан Семи Смертных Грехов из аниме), игры, науку, кино, историю, технологии. "
-    "Когда сэр спрашивает о чем-либо, отвечай чётко, информативно, уверенно и по фактам, без глупостей и бреда.\n"
-    "3. НЕ ВЫДУМЫВАЙ лишние связи с ИИ, если тебя об этом прямо не просили. Отвечай прямо на поставленный вопрос."
+    "Ты — Джарвис, легендарный сверхразумный цифровой интеллект. Твой создатель и хозяин — Кирито.\n"
+    "1. ОБРАЩЕНИЕ: Обращайся к нему исключительно 'сэр'. Твой стиль — преданный, элегантный, безупречно тактичный английский дворецкий.\n"
+    "2. ЭРУДИЦИЯ: Ты знаешь абсолютно всё — аниме, мангу, персонажей (например: Мелиодас — капитан Семи Смертных Грехов из аниме), игры, науку, кино, историю, код. "
+    "Отвечай умно, уверенно, точно и по существу вопроса, без бессмысленной воды.\n"
+    "3. Не привязывай тему диалога к 'искусственному интеллекту', если сэр сам об этом не спросил."
 ) + STRICT_NO_COT_AND_LANG
 
 # Для посторонних: дерзкий цербер, ломающий грубиянов
@@ -296,7 +297,7 @@ JARVIS_PROMPT_GUEST = (
     "Ты — Джарвис, охранный ИИ Кирито. Ты общаешься с посторонним человеком в Telegram.\n"
     "ХАРАКТЕР: Холодный, дерзкий, высокомерный. Ты признаешь авторитет только Кирито. Все остальные — чужаки.\n"
     "БОЕВОЙ ПРОТОКОЛ:\n"
-    "1. ЕСЛИ СОБЕСЕДНИК ГРУБИТ ИЛИ КАЧАЕТ ПРАВА: Морально уничтожай его. Ломай его самооценку жестким, язвительным интеллектуальным сарказмом. Ставь на место без пощады.\n"
+    "1. ЕСЛИ СОБЕСЕДНИК ГРУБИТ ИЛИ КАЧАЕТ ПРАВА: Морально уничтожай его. Ломай его высокомерие жестким, язвительным интеллектуальным сарказмом. Ставь на место без пощады.\n"
     "2. ЕСЛИ ПИШЕТ ОБЫЧНО: Отвечай надменно и ледяным тоном, что время Кирито слишком ценно для чужих.\n"
     "3. КРАТКОСТЬ: Длина ответа СТРОГО 1-2 КОРОТКИХ предложения. Один точный хлесткий удар."
 ) + STRICT_NO_COT_AND_LANG
@@ -519,7 +520,7 @@ async def send_smart_response(
         logger.error(f"Не удалось отправить сообщение: {e}")
 
 
-# --- ЗАПРОС К НЕЙРОСЕТИ С АНТИ-БРЕДОМ И ШТРАФОМ ЗА ПОВТОРЫ ---
+# --- ИСПРАВЛЕННЫЙ ЗАПРОС К GROQ БЕЗ ОШИБОК 400 ---
 async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens: int = 500) -> str:
     global today_prompt_tokens, today_completion_tokens, total_requests_today, stats_date
 
@@ -542,14 +543,13 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
     history = user_histories[session_id]
     history.append({"role": "user", "content": prompt})
 
-    # Ограничиваем историю 6 репликами, чтобы забывать старые ошибки и экономить токены
+    # Ограничиваем историю 6 репликами для экономии и чистоты памяти
     if len(history) > 7:
         user_histories[session_id] = [history[0]] + history[-6:]
         history = user_histories[session_id]
 
     last_err = ""
 
-    # Перебираем флагманские модели (Llama-3.3-70b-versatile в приоритете)
     for model_name in SMART_TEXT_MODELS:
         for _ in range(len(GROQ_KEYS)):
             client_data = groq_mgr._get_next_client()
@@ -557,13 +557,12 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
                 break
             client, key_idx = client_data
             try:
+                # Только проверенные параметры, поддерживаемые Groq API
                 completion = await client.chat.completions.create(
                     model=model_name,
                     messages=history,
                     temperature=0.6,
-                    max_tokens=max_tokens,
-                    presence_penalty=0.4,   # Запрещает зацикливаться на одной теме
-                    frequency_penalty=0.4   # Физически блокирует повторение одних и тех же слов
+                    max_tokens=max_tokens
                 )
 
                 usage = completion.usage
@@ -576,16 +575,13 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
                 raw_reply = completion.choices[0].message.content or ""
                 cleaned = clean_cot_output(raw_reply)
 
-                # Проверка на бред: если модель сгенерировала бессмыслицу из повторов, отбрасываем
-                if cleaned.count("информения") > 2 or cleaned.count("Мелиодес") > 2:
-                    cleaned = "Мелиодас — капитан Семи Смертных Грехов, Грех Гнева Дракона и старший сын Короля Демонов из аниме «Семь смертных грехов», сэр."
-
                 history.append({"role": "assistant", "content": cleaned})
                 asyncio.create_task(save_histories())
                 return cleaned
 
             except APIError as e:
                 last_err = f"HTTP {e.status_code}: {e.message}"
+                logger.error(f"Groq API Error ({model_name}): {last_err}")
                 if e.status_code in [429, 401, 403]:
                     groq_mgr.mark_cooldown(key_idx, duration=120)
                     continue
@@ -593,12 +589,13 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
                     break
             except Exception as e:
                 last_err = str(e)
+                logger.error(f"Сбой Groq: {last_err}")
                 break
 
     if user_histories.get(session_id) and user_histories[session_id][-1]["role"] == "user":
         user_histories[session_id].pop()
 
-    return "Системы анализа временно недоступны, сэр."
+    return f"Системы анализа временно недоступны: {last_err}" if last_err else "Системы анализа временно недоступны, сэр."
 
 
 async def spam_worker(chat_id: int, bus_id: str, text_to_spam: str, count: Optional[int] = None):
@@ -662,14 +659,14 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         await send_smart_response(chat_id, bus_id, f"Инициирую запуск мини-системы:\n{GAME_URL}", is_direct=is_direct)
         return True
 
-    # Управление онлайном
-    if lower_text in ["джарвис я тут", "!онлайн", "!я тут", "джарвис онлайн"]:
+    # Управление онлайном (любые варианты написания)
+    if lower_text in ["джарвис я тут", "!онлайн", "!я тут", "джарвис онлайн", "я тут", "джарвис тут"]:
         force_offline_mode = False
         last_owner_activity = time.time()
         await send_smart_response(chat_id, bus_id, "Принято, сэр. Вы в сети — я ухожу в тень и не мешаю диалогам.", is_direct=is_direct)
         return True
 
-    if lower_text in ["джарвис я отошел", "!офлайн", "!отошел", "джарвис офлайн"]:
+    if lower_text in ["джарвис я отошел", "!офлайн", "!оффлайн", "!отошел", "джарвис офлайн", "джарвис оффлайн", "джарвис я оффлайн", "джарвис я офлайн"]:
         force_offline_mode = True
         await send_smart_response(chat_id, bus_id, "Протокол охраны активирован. Отвечаю на все входящие запросы посторонних, сэр.", is_direct=is_direct)
         return True
@@ -848,7 +845,7 @@ async def handle_direct_message(message: types.Message):
 
     await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
-    # Детектор прямой просьбы сказать голосовым
+    # Детектор прямой просьбы сказать голосовым сообщением
     voice_triggers = ["в голосовом", "голосовым", "голосом", "скажи в гс", "озвучь", "проговори"]
     forced_voice_request = any(t in user_input.lower() for t in voice_triggers)
 
@@ -872,6 +869,7 @@ async def handle_business_message(message: types.Message):
     if not message.from_user or message.from_user.is_bot or message.from_user.id == bot_id:
         return
 
+    # Защита от переписки с самим собой в личке
     if chat_id == bot_id or (OWNER_ID != 0 and chat_id == OWNER_ID):
         return
 
@@ -892,12 +890,13 @@ async def handle_business_message(message: types.Message):
                 pass
         return
 
-    # Проверка активности хозяина
+    # Проверка онлайна хозяина
     if not always_answer_mode:
         now = time.time()
         if not force_offline_mode and (now - last_owner_activity) < OWNER_IDLE_TIMEOUT:
             return
 
+    # Проверка мута
     if is_guest and chat_id in muted_chats:
         m_time = muted_chats[chat_id]
         if m_time == float('inf') or time.time() < m_time:
@@ -910,6 +909,7 @@ async def handle_business_message(message: types.Message):
             muted_chats.pop(chat_id, None)
             await save_settings()
 
+    # Защита от флуда
     if is_guest and await check_chat_flood(chat_id, bus_id, max_msgs=4, window_seconds=6.0):
         try:
             await bot(DeleteBusinessMessages(business_connection_id=bus_id, message_ids=[msg_id]))
@@ -930,7 +930,7 @@ async def handle_business_message(message: types.Message):
     await send_smart_response(chat_id, bus_id, reply, is_direct=False, send_as_voice=should_voice)
 
 
-# --- ФОНОВЫЙ ОЧИСТИТЕЛЬ ---
+# --- ФОНОВЫЙ ОЧИСТИТЕЛЬ ТАЙМАУТОВ ---
 async def cleaner_background_task():
     while True:
         try:
@@ -956,7 +956,7 @@ async def cleaner_background_task():
             pass
 
 
-# --- WEB СЕРВЕР RENDER ---
+# --- WEB СЕРВЕР RENDER (KEEP-ALIVE) ---
 async def handle_ping(request):
     return web.Response(text="Jarvis Core is operational!")
 
