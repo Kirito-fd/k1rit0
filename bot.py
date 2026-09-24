@@ -41,14 +41,14 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 GAME_URL = "https://kirito-fd.github.io/k1rit0/"
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
-OWNER_IDLE_TIMEOUT = 300  # 5 минут неактивности хозяина до перехода в автодежурство
+OWNER_IDLE_TIMEOUT = 300  # 5 минут неактивности до автоответа
 
 # Флаги статуса присутствия владельца
 force_offline_mode = False
 always_answer_mode = False
 last_owner_activity = 0.0
 
-# --- ПАРАМЕТРЫ ГОЛОСА (FISH AUDIO / EDGE-TTS) ---
+# --- ПАРАМЕТРЫ ГОЛОСА ---
 FISH_AUDIO_API_KEY = os.getenv("FISH_AUDIO_API_KEY", "").strip()
 FISH_AUDIO_VOICE_ID = os.getenv("FISH_AUDIO_VOICE_ID", "680d74fbef69419f87cfc70f092a1451").strip()
 
@@ -58,7 +58,7 @@ OFFICIAL_RATE = "+10%"
 
 HAS_FFMPEG = shutil.which("ffmpeg") is not None
 
-# Сбор всех доступных ключей GROQ
+# Сбор всех ключей GROQ
 GROQ_KEYS = [
     val.strip() for key, val in sorted(os.environ.items())
     if key.startswith("GROQ_API_KEY") and val.strip()
@@ -126,12 +126,14 @@ class GroqManager:
             client, idx = client_data
             try:
                 models_data = await client.models.list()
+                # Исключаем служебные и длиннодумающие модели (r1, deepseek, qwq), оставляем чистые быстрые
                 valid = [
                     m.id for m in models_data.data
-                    if not any(x in m.id.lower() for x in ["whisper", "guard", "tool", "vision", "embed"])
+                    if not any(x in m.id.lower() for x in ["whisper", "guard", "tool", "vision", "embed", "r1", "deepseek", "qwq"])
                 ]
                 if valid:
-                    valid.sort(key=lambda x: ("70b" in x or "120b" in x or "versatile" in x), reverse=True)
+                    # Приоритет проверенным быстрым моделям
+                    valid.sort(key=lambda x: ("70b" in x or "versatile" in x), reverse=True)
                     self.cached_models = valid
                     self.last_models_update = now
                     logger.info(f"Активные модели Groq: {self.cached_models}")
@@ -173,7 +175,7 @@ class GroqManager:
         return "Приветствую, сэр."
 
     async def describe_image(self, image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
-        """Зрительное распознавание фото и стикеров через официальные Vision-модели Groq."""
+        """Распознавание лиц, мемов, людей и персонажей через Groq Vision."""
         b64 = base64.b64encode(image_bytes).decode("utf-8")
         data_url = f"data:{mime_type};base64,{b64}"
 
@@ -183,7 +185,7 @@ class GroqManager:
                 "content": [
                     {
                         "type": "text",
-                        "text": "Что или кто изображен на этом фото/стикере? Ответь точно и конкретно (персонаж, имя, мем, надпись или суть изображения)."
+                        "text": "Кто или что на этом изображении/стикере? Назови конкретные имена знаменитостей, персонажей или суть мема на русском языке кратко (1-2 предложения)."
                     },
                     {
                         "type": "image_url",
@@ -205,13 +207,14 @@ class GroqManager:
                     completion = await client.chat.completions.create(
                         model=vm,
                         messages=vision_messages,
-                        max_tokens=100,
+                        max_tokens=120,
                         temperature=0.2
                     )
                     res = completion.choices[0].message.content or ""
                     if res.strip():
-                        logger.info(f"Зрение успешно распознало изображение через {vm}: {res.strip()}")
-                        return res.strip()
+                        clean_desc = clean_cot_output(res)
+                        logger.info(f"Зрение ({vm}) распознало: {clean_desc}")
+                        return clean_desc
                 except APIError as e:
                     if e.status_code in [429, 401, 403]:
                         self.mark_cooldown(idx, duration=60)
@@ -305,26 +308,25 @@ async def save_stats():
 # --- ПРОМПТЫ ДЖАРВИСА ---
 STRICT_NO_COT_AND_LANG = (
     "\nГЛАВНЫЕ ПРАВИЛА:\n"
-    "1. ЯЗЫК: Отвечай ИСКЛЮЧИТЕЛЬНО на грамотном русском языке. Никакого английского языка.\n"
-    "2. СТРОГО ЗАПРЕЩЕНО использовать любые эмодзи и смайлы.\n"
-    "3. Сразу пиши прямой ответ. Никаких рассуждений и тегов <think>."
+    "1. ЯЗЫК: Отвечай ИСКЛЮЧИТЕЛЬНО на русском языке.\n"
+    "2. СТРОГО БЕЗ ЭМОДЗИ И СМАЙЛИКОВ.\n"
+    "3. Пиши СРАЗУ готовый ответ, без вступительных слов и без размышлений."
 )
 
 JARVIS_PROMPT_DIRECT = (
     "Ты — Джарвис, легендарный сверхразумный цифровой интеллект. Твой создатель и хозяин — Кирито.\n"
     "1. ОБРАЩЕНИЕ: Обращайся к нему исключительно 'сэр'. Твой стиль — преданный, элегантный, безупречно тактичный английский дворецкий.\n"
-    "2. ЭРУДИЦИЯ: Ты знаешь абсолютно всё — аниме, мангу, персонажей (например: Мелиодас — капитан Семи Смертных Грехов из аниме), интернет-мемы (например: Гигачад / GigaChad), игры, науку, кино, историю, код. "
-    "Когда сэр присылает фото или вопрос, отвечай прямо, умно, уверенно и исчерпывающе по существу.\n"
-    "3. Никогда не говори 'я не умею смотреть фото', если во входящем сообщении передано описание изображения."
+    "2. ЭРУДИЦИЯ: Ты знаешь абсолютно всё — спорт, знаменитостей (например, Криштиану Роналду), интернет-мемы, аниме, игры, науку, кино. "
+    "Отвечай четко, умно и исчерпывающе по существу вопроса."
 ) + STRICT_NO_COT_AND_LANG
 
 JARVIS_PROMPT_GUEST = (
-    "Ты — Джарвис, охранный ИИ Кирито. Ты общаешься с посторонним человеком в Telegram.\n"
+    "Ты — Джарвис, защитная система и охранный ИИ Кирито. С тобой говорит посторонний человек в Telegram Business.\n"
     "ХАРАКТЕР: Холодный, дерзкий, высокомерный. Ты признаешь авторитет только Кирито. Все остальные — чужаки.\n"
-    "БОЕВОЙ ПРОТОКОЛ:\n"
-    "1. ЕСЛИ СОБЕСЕДНИК ГРУБИТ ИЛИ КАЧАЕТ ПРАВА: Морально уничтожай его. Ломай его высокомерие жестким, язвительным интеллектуальным сарказмом. Ставь на место без пощады.\n"
-    "2. ЕСЛИ ПИШЕТ ОБЫЧНО: Отвечай надменно и ледяным тоном, что время Кирито слишком ценно для чужих.\n"
-    "3. КРАТКОСТЬ (ЭКОНОМИЯ ТОКЕНОВ): Длина ответа СТРОГО 1-2 КОРОТКИХ предложения. Один точный хлесткий удар."
+    "ПРАВИЛА:\n"
+    "1. Если собеседник прислал фото или вопрос (например, 'Кто это?'): отвечай прямо, дерзко, с легкой надменной усмешкой, четко называя, кто на фото (например: 'Перед вами Криштиану Роналду в мундире, если ваше зрение вам отказывает').\n"
+    "2. Если собеседник грубит: сломай его самооценку ядовитым интеллектуальным сарказмом.\n"
+    "3. КРАТКОСТЬ: 1-2 уверенных предложения. Никогда не говори, что запрос пустой или бессмысленный."
 ) + STRICT_NO_COT_AND_LANG
 
 
@@ -340,12 +342,17 @@ recent_sent_messages: Dict[Tuple[int, str], float] = {}
 
 
 def clean_cot_output(text: str) -> str:
-    text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"<think>[\s\S]*$", "", text, flags=re.IGNORECASE)
+    """Удаляет теги рассуждений <think>, не давая ответу стать пустым."""
+    cleaned = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE)
+    cleaned = re.sub(r"<think>[\s\S]*$", "", cleaned, flags=re.IGNORECASE)
     for m in ["**Итоговый ответ**", "Итоговый ответ:"]:
-        if m in text:
-            text = text.split(m)[-1]
-    return text.strip()
+        if m in cleaned:
+            cleaned = cleaned.split(m)[-1]
+    cleaned = cleaned.strip()
+    # Если вдруг фильтр вычистил всё — возвращаем исходный текст без тегов
+    if not cleaned and text.strip():
+        cleaned = re.sub(r"</?think>", "", text, flags=re.IGNORECASE).strip()
+    return cleaned
 
 
 async def check_chat_flood(chat_id: int, bus_id: str, max_msgs: int = 4, window_seconds: float = 6.0) -> bool:
@@ -374,7 +381,7 @@ async def check_chat_flood(chat_id: int, bus_id: str, max_msgs: int = 4, window_
 
 
 async def extract_message_content(message: types.Message) -> Tuple[str, bool]:
-    caption_text = f" (Подпись/вопрос к фото: {message.caption})" if message.caption else ""
+    caption_text = f" (Подпись/вопрос собеседника к фото: {message.caption})" if message.caption else ""
 
     if message.voice or message.video_note:
         file_obj = message.voice or message.video_note
@@ -399,7 +406,7 @@ async def extract_message_content(message: types.Message) -> Tuple[str, bool]:
                 img_data = f.read()
             desc = await groq_mgr.describe_image(img_data, mime_type="image/jpeg")
             if desc:
-                return f"[Собеседник прислал фото. Зрительный анализ зафиксировал: {desc}]{caption_text}", False
+                return f"[Собеседник прислал фото. Визуальный анализ определил: {desc}]{caption_text}", False
             return f"[Собеседник прислал фото]{caption_text}", False
         except Exception as e:
             logger.error(f"Ошибка обработки фото: {e}")
@@ -428,7 +435,7 @@ async def extract_message_content(message: types.Message) -> Tuple[str, bool]:
                 temp_stk.unlink(missing_ok=True)
 
         if desc:
-            return f"[Собеседник отправил стикер {emoji}. На стикере изображено: {desc}]", False
+            return f"[Собеседник отправил стикер {emoji}. На стикере: {desc}]", False
         return f"[Собеседник отправил стикер с эмоцией: {emoji}]", False
 
     if message.text:
@@ -512,8 +519,8 @@ async def send_smart_response(
     reply_markup: Optional[InlineKeyboardMarkup] = None,
     send_as_voice: bool = False
 ):
-    if not reply_text.strip():
-        reply_text = "Системы анализа не зафиксировали смысла в вашем запросе."
+    if not reply_text or not reply_text.strip():
+        reply_text = "Интерфейс связи зафиксировал ваш сигнал. Сформулируйте мысль яснее."
 
     now = time.time()
     key = (chat_id, reply_text)
@@ -546,8 +553,8 @@ async def send_smart_response(
         logger.error(f"Не удалось отправить сообщение: {e}")
 
 
-# --- ЗАПРОС К GROQ ---
-async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens: int = 500) -> str:
+# --- ЗАПРОС К GROQ С ДОСТАТОЧНЫМ ЛИМИТОМ ТОКЕНОВ ---
+async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens: int = 300) -> str:
     global today_prompt_tokens, today_completion_tokens, total_requests_today, stats_date
 
     now_date = datetime.date.today().isoformat()
@@ -600,9 +607,10 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
                 raw_reply = completion.choices[0].message.content or ""
                 cleaned = clean_cot_output(raw_reply)
 
-                history.append({"role": "assistant", "content": cleaned})
-                asyncio.create_task(save_histories())
-                return cleaned
+                if cleaned:
+                    history.append({"role": "assistant", "content": cleaned})
+                    asyncio.create_task(save_histories())
+                    return cleaned
 
             except APIError as e:
                 last_err = f"HTTP {e.status_code}: {e.message}"
@@ -620,7 +628,7 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
     if user_histories.get(session_id) and user_histories[session_id][-1]["role"] == "user":
         user_histories[session_id].pop()
 
-    return f"Системы анализа временно недоступны: {last_err}" if last_err else "Системы анализа временно недоступны, сэр."
+    return f"Системы временно недоступны: {last_err}" if last_err else "Системы анализа временно недоступны, сэр."
 
 
 async def spam_worker(chat_id: int, bus_id: str, text_to_spam: str, count: Optional[int] = None):
@@ -810,10 +818,10 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
             f"<b>Диагностика JARVIS:</b>\n"
             f"• Статус хозяина: <b>{owner_status}</b>\n"
             f"• Активная модель: {primary_m}\n"
-            f"• Зрение: Qwen 3.8 27B Vision (Активно)\n"
+            f"• Зрение: Qwen 3.8 27B Vision\n"
             f"• Голос: {tts_source} ({v_status})\n"
             f"• Статус собеседника: {g_status}\n"
-            f"• Доступных ключей Groq: {len(GROQ_KEYS)}"
+            f"• Ключей Groq: {len(GROQ_KEYS)}"
         )
         await send_smart_response(chat_id, bus_id, status_msg, is_direct=is_direct)
         return True
@@ -873,7 +881,6 @@ async def handle_direct_message(message: types.Message):
 
     await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
-    # Детектор голосового запроса
     voice_triggers = ["в голосовом", "голосовым", "голосом", "скажи в гс", "озвучь", "проговори"]
     forced_voice_request = any(t in user_input.lower() for t in voice_triggers)
 
@@ -949,8 +956,8 @@ async def handle_business_message(message: types.Message):
 
     await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING, business_connection_id=bus_id)
 
-    # 1-2 дерзких предложения для чужаков (экономия токенов)
-    reply = await ask_groq(user_input, chat_id, JARVIS_PROMPT_GUEST, max_tokens=90)
+    # 220 токенов для полноценного ответа без обрывов
+    reply = await ask_groq(user_input, chat_id, JARVIS_PROMPT_GUEST, max_tokens=220)
     
     random_voice_chance = random.random() < 0.25
     should_voice = is_voice or voice_chat_modes.get(chat_id, False) or random_voice_chance
