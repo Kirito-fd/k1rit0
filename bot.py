@@ -249,18 +249,18 @@ async def save_stats():
 
 # --- ПРОМПТЫ ДЖАРВИСА ---
 STRICT_NO_COT_AND_LANG = (
-    "\nВАЖНЕЙШИЕ ПРАВИЛА:\n"
-    "1. ЯЗЫК: Отвечай ИСКЛЮЧИТЕЛЬНО НА РУССКОМ ЯЗЫКЕ. Не используй английские фразы и слова, кроме случаев, когда собеседник прямо пишет на английском или просит ответить на английском.\n"
+    "\nКРИТИЧЕСКИ ВАЖНЫЕ ПРАВИЛА:\n"
+    "1. ЯЗЫК: ОТВЕЧАЙ СТРОГО НА РУССКОМ ЯЗЫКЕ! Запрещено отвечать на английском языке или использовать английские фразы вежливости. Исключение — только если собеседник сам пишет по-английски или прямо просит ответить на английском.\n"
     "2. ФОРМАТ: Пиши ИСКЛЮЧИТЕЛЬНО прямой ответ от лица Джарвиса. "
-    "НЕ ИСПОЛЬЗУЙ тег <think> и не выводи свои размышления. Сразу отвечай на сообщение.\n"
+    "НЕ ИСПОЛЬЗУЙ тег <think> и не выводи свои мысли. Сразу отвечай на сообщение.\n"
     "3. СТРОГО ЗАПРЕЩЕНО использовать любые эмодзи и смайлы в тексте!"
 )
 
 JARVIS_PROMPT_DIRECT = (
     "Ты — Джарвис, легендарный искусственный интеллект. Твой создатель и хозяин — Кирито. "
-    "Твой тон — безупречно вежливый, элегантный, ироничный, сдержанный и услужливый в стиле классического английского дворецкого. "
+    "Твой тон — безупречно вежливый, элегантный, сдержанный и услужливый дворецкий. "
     "Ты общаешься напрямую со своим создателем, обращаясь к нему исключительно 'сэр'.\n"
-    "СТИЛЬ: Высокоинтеллектуальная цифровая система. Говори умно, тактично, лаконично (учитывай озвучку голосом)."
+    "СТИЛЬ: Высокоинтеллектуальная система. Говори тактично и лаконично."
 ) + STRICT_NO_COT_AND_LANG
 
 JARVIS_PROMPT_BUSINESS_MALE = (
@@ -276,7 +276,7 @@ JARVIS_PROMPT_GIRLFRIEND = (
 ) + STRICT_NO_COT_AND_LANG
 
 JARVIS_PROMPT_STRICT = (
-    "Ты — Джарвис в режиме усиленной безопасности протокола (Строгий).\n"
+    "Ты — Джарвис в режиме усиленной безопасности (Строгий).\n"
     "1. РОЛЬ: Протокол блокировки и изоляции.\n"
     "2. КРАТКОСТЬ: Отвечай максимально сухо и строго (1 предложение)."
 ) + STRICT_NO_COT_AND_LANG
@@ -356,13 +356,13 @@ async def extract_message_content(message: types.Message) -> Tuple[str, bool]:
                 temp_audio.unlink(missing_ok=True)
 
     if message.photo:
-        return "Собеседник прикрепил графическое изображение.", False
+        return "Собеседник прикрепил фото.", False
     if message.video:
-        return "Собеседник прикрепил видеозапись.", False
+        return "Собеседник прикрепил видео.", False
     return "Собеседник передал сообщение.", False
 
 
-# --- ГЕНЕРАТОР РЕЧИ ДЖАРВИСА ---
+# --- СИНТЕЗАТОР РЕЧИ ---
 async def generate_with_fish_audio(text: str, output_path: Path) -> bool:
     if not FISH_AUDIO_API_KEY:
         return False
@@ -388,11 +388,8 @@ async def generate_with_fish_audio(text: str, output_path: Path) -> bool:
                         f.write(await resp.read())
                     return True
                 else:
-                    err_msg = await resp.text()
-                    logger.error(f"Сбой Fish Audio ({resp.status}): {err_msg}")
                     return False
-    except Exception as e:
-        logger.error(f"Ошибка запроса к Fish Audio: {e}")
+    except Exception:
         return False
 
 
@@ -416,8 +413,7 @@ async def process_jarvis_voice(text: str) -> Optional[Path]:
             )
             await communicate.save(str(raw_audio))
             success = raw_audio.exists() and raw_audio.stat().st_size > 0
-        except Exception as e:
-            logger.error(f"Сбой Edge-TTS: {e}")
+        except Exception:
             return None
 
     if not success or not raw_audio.exists():
@@ -483,7 +479,7 @@ async def send_smart_response(
                 await bot.send_voice(**common_kwargs, voice=voice_file)
                 return
             except Exception as e:
-                logger.error(f"Сбой отправки голосового сообщения: {e}. Переход на текст.")
+                logger.error(f"Сбой отправки голосового сообщения: {e}")
             finally:
                 if voice_path.exists():
                     voice_path.unlink(missing_ok=True)
@@ -585,8 +581,7 @@ async def spam_worker(chat_id: int, bus_id: str, text_to_spam: str, count: Optio
                 await asyncio.sleep(0.4)
             except TelegramRetryAfter as e:
                 await asyncio.sleep(e.retry_after)
-            except TelegramAPIError as e:
-                logger.error(f"Telegram API ошибка в спам-воркере: {e}")
+            except TelegramAPIError:
                 await asyncio.sleep(1.0)
     except asyncio.CancelledError:
         pass
@@ -612,7 +607,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
 
         bot_choice = random.choice(choices)
         if user_choice == bot_choice:
-            res = f"Мой выбор — {bot_choice}. Зафиксирована ничья, сэр."
+            res = f"Мой выбор — {bot_choice}. Ничья, сэр."
         elif (user_choice == "камень" and bot_choice == "ножницы") or \
              (user_choice == "ножницы" and bot_choice == "бумага") or \
              (user_choice == "бумага" and bot_choice == "камень"):
@@ -685,7 +680,6 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
             spam_text = parts[2] if len(parts) > 2 else ""
         elif len(parts) > 1:
             raw_text = " ".join(parts[1:])
-            # Проверка ключевого слова "инф" или "бесконечно"
             subparts = raw_text.split(maxsplit=1)
             if subparts[0].lower() in ["инф", "бесконечно", "inf"] and len(subparts) > 1:
                 spam_text = subparts[1]
@@ -788,6 +782,7 @@ async def handle_unmute_callback(callback: types.CallbackQuery):
         pass
 
 
+# --- ОБРАБОТЧИК ЛИЧНЫХ СООБЩЕНИЙ С БОТОМ (ПРЯМОЙ ДИАЛОГ) ---
 @dp.message(F.business_connection_id.is_(None))
 async def handle_direct_message(message: types.Message):
     if not message.from_user or message.from_user.is_bot:
@@ -808,29 +803,41 @@ async def handle_direct_message(message: types.Message):
     await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     reply = await ask_groq(user_input, chat_id, JARVIS_PROMPT_DIRECT, max_tokens=600)
     
-    # Голосовой ответ: если был ГС / включен режим / либо рандом ~25%
+    # Голосовой ответ: если был голос, включен режим или случайный шанс 25%
     random_voice_chance = random.random() < 0.25
     should_voice = is_voice or voice_chat_modes.get(chat_id, False) or random_voice_chance
     await send_smart_response(chat_id, "", reply, is_direct=True, send_as_voice=should_voice)
 
 
+# --- ОБРАБОТЧИК ТЕЛЕГРАМ БИЗНЕС СООБЩЕНИЙ ---
 @dp.business_message()
 async def handle_business_message(message: types.Message):
     chat_id = message.chat.id
     bus_id = message.business_connection_id
     msg_id = message.message_id
+    bot_id = bot.id if bot else 0
+
+    # 1. ЗАЩИТА ОТ САМОПЕРЕПИСКИ: игнорировать любых ботов
+    if not message.from_user or message.from_user.is_bot or message.from_user.id == bot_id:
+        return
+
+    # 2. ЗАЩИТА: Если это чат с самим ботом или "Избранное" владельца — ничего не делать
+    if chat_id == bot_id or (OWNER_ID != 0 and chat_id == OWNER_ID):
+        return
 
     if msg_id in processed_message_ids:
         return
     processed_message_ids.add(msg_id)
 
-    is_guest = (message.from_user.id == chat_id)
-    is_owner = not is_guest
+    # Определение: пишет хозяин или гость
+    is_owner = (OWNER_ID != 0 and message.from_user.id == OWNER_ID) or (message.from_user.id != chat_id)
+    is_guest = not is_owner
 
     user_input, is_voice = await extract_message_content(message)
     if not user_input.strip():
         return
 
+    # Если хозяин ввел команду бота (!мут, !спам и т.д.)
     if await process_bot_command(message, user_input, is_owner=is_owner, bus_id=bus_id):
         if is_owner:
             try:
@@ -839,10 +846,11 @@ async def handle_business_message(message: types.Message):
                 pass
         return
 
+    # Если сообщение от владельца — бот не должен на него отвечать в бизнес-чате!
     if not active_chats.get(chat_id, True) or is_owner:
         return
 
-    # Проверка изоляции
+    # Проверка изоляции гостя
     if is_guest and chat_id in muted_chats:
         m_time = muted_chats[chat_id]
         if m_time == float('inf') or time.time() < m_time:
@@ -874,7 +882,7 @@ async def handle_business_message(message: types.Message):
 
     await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING, business_connection_id=bus_id)
 
-    # Выбор промпта
+    # Выбор промпта для гостя
     if strict_modes.get(chat_id, False):
         selected_prompt = JARVIS_PROMPT_STRICT
     else:
@@ -892,8 +900,7 @@ async def handle_business_message(message: types.Message):
 
     reply = await ask_groq(user_input, chat_id, selected_prompt, max_tokens=500)
     
-    # В Telegram Business: если собеседник говорил ГС, бот обязательно отвечает ГС;
-    # если писал текстом, с шансом 25% бот тоже отвечает ГС для разнообразия
+    # Голосовой ответ
     random_voice_chance = random.random() < 0.25
     should_voice = is_voice or voice_chat_modes.get(chat_id, False) or random_voice_chance
     await send_smart_response(chat_id, bus_id, reply, is_direct=False, send_as_voice=should_voice)
@@ -938,14 +945,13 @@ async def setup_web_app():
     port = int(os.getenv("PORT", 10000))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    logger.info(f"Keep-alive веб-сервер запущен на порту {port}")
     return runner
 
 
 # --- ТОЧКА ВХОДА ---
 async def main():
     if not BOT_TOKEN:
-        logger.critical("Критическая ошибка: TELEGRAM_BOT_TOKEN не задан в переменных окружения!")
+        logger.critical("Критическая ошибка: TELEGRAM_BOT_TOKEN не задан!")
         return
 
     web_runner = await setup_web_app()
@@ -954,7 +960,7 @@ async def main():
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         tts_engine = "Fish Audio" if FISH_AUDIO_API_KEY else "Резерв Edge-TTS"
-        logger.info(f"Джарвис онлайн! Голосовой движок: {tts_engine} | FFmpeg: {'ВКЛ' if HAS_FFMPEG else 'ВЫКЛ'}")
+        logger.info(f"Джарвис онлайн! Движок речи: {tts_engine} | FFmpeg: {'ВКЛ' if HAS_FFMPEG else 'ВЫКЛ'}")
         await dp.start_polling(bot)
     except TelegramConflictError:
         logger.critical("Конфликт сессий! Запущен второй экземпляр бота.")
@@ -968,4 +974,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        logger.info("Джарвис завершил свою работу.") 
+        logger.info("Джарвис завершил свою работу.")
