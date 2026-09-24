@@ -38,19 +38,20 @@ logger = logging.getLogger("JarvisCore")
 # --- КОНФИГУРАЦИЯ СИСТЕМЫ ---
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 GAME_URL = "https://kirito-fd.github.io/k1rit0/"
+OWNER_ID = int(os.getenv("OWNER_ID", "0"))  # Опционально: ваш Telegram ID
 
 # --- ПАРАМЕТРЫ КЛОНА ДЖАРВИСА (FISH AUDIO) ---
 FISH_AUDIO_API_KEY = os.getenv("FISH_AUDIO_API_KEY", "").strip()
 FISH_AUDIO_VOICE_ID = os.getenv("FISH_AUDIO_VOICE_ID", "680d74fbef69419f87cfc70f092a1451").strip()
 
-# Резервный голос (Edge-TTS)
+# Резервный профиль Edge-TTS
 OFFICIAL_VOICE = "ru-RU-DmitryNeural"
 OFFICIAL_PITCH = "+0Hz"
 OFFICIAL_RATE = "+10%"
 
 HAS_FFMPEG = shutil.which("ffmpeg") is not None
 
-# Сбор всех ключей GROQ из окружения
+# Сбор всех ключей GROQ
 GROQ_KEYS = [
     val.strip() for key, val in sorted(os.environ.items())
     if key.startswith("GROQ_API_KEY") and val.strip()
@@ -381,7 +382,7 @@ async def generate_with_fish_audio(text: str, output_path: Path) -> bool:
     headers = {
         "Authorization": f"Bearer {FISH_AUDIO_API_KEY}",
         "Content-Type": "application/json",
-        "model": "s2.1-pro-free"  # Бесплатная модель разработчика
+        "model": "s2.1-pro-free"
     }
     payload: Dict[str, Any] = {
         "text": text,
@@ -779,12 +780,28 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
     return False
 
 
+# --- ЗАЩИЩЕННЫЙ ОБРАБОТЧИК РАЗМУТА ---
 @dp.callback_query(F.data == "jarvis_unmute_direct")
 async def handle_unmute_callback(callback: types.CallbackQuery):
     chat_id = callback.message.chat.id
+    user_id = callback.from_user.id
+
+    # В Telegram Business chat_id равен ID собеседника (гостя).
+    # Если нажимает сам замученный собеседник или чужой аккаунт — блокируем:
+    is_guest = (user_id == chat_id)
+    is_unauthorized = is_guest or (OWNER_ID != 0 and user_id != OWNER_ID)
+
+    if is_unauthorized:
+        await callback.answer(
+            "Доступ заблокирован: протокол безопасности может отменить только создатель системы.",
+            show_alert=True
+        )
+        return
+
+    # Если нажимает владелец (Кирито):
     muted_chats.pop(chat_id, None)
     await save_settings()
-    await callback.answer("Изоляция снята!")
+    await callback.answer("Изоляция успешно аннулирована, сэр.")
     try:
         await callback.message.edit_text("Изоляция собеседника успешно снята, сэр.")
     except Exception:
