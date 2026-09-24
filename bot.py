@@ -38,7 +38,7 @@ logger = logging.getLogger("JarvisCore")
 # --- КОНФИГУРАЦИЯ СИСТЕМЫ ---
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 GAME_URL = "https://kirito-fd.github.io/k1rit0/"
-OWNER_ID = int(os.getenv("OWNER_ID", "0"))  # Опционально: ваш Telegram ID
+OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
 # --- ПАРАМЕТРЫ КЛОНА ДЖАРВИСА (FISH AUDIO) ---
 FISH_AUDIO_API_KEY = os.getenv("FISH_AUDIO_API_KEY", "").strip()
@@ -153,6 +153,7 @@ class GroqManager:
                 res = await client.audio.transcriptions.create(
                     file=(os.path.basename(audio_path), content),
                     model="whisper-large-v3",
+                    language="ru"
                 )
                 return res.text
             except APIError as e:
@@ -198,19 +199,19 @@ def load_settings():
     d = sync_load_json(SETTINGS_FILE, {})
     mutes = {int(k): v for k, v in d.get("muted_chats", {}).items()}
     bans = {int(k): v for k, v in d.get("blocked_guests", {}).items()}
-    modes = {int(k): v for k, v in d.get("nsfw_modes", {}).items()}
+    modes = {int(k): v for k, v in d.get("strict_modes", {}).items()}
     v_modes = {int(k): v for k, v in d.get("voice_chat_modes", {}).items()}
     return mutes, bans, modes, v_modes
 
 
-muted_chats, blocked_guests, nsfw_modes, voice_chat_modes = load_settings()
+muted_chats, blocked_guests, strict_modes, voice_chat_modes = load_settings()
 
 
 async def save_settings():
     data = {
         "muted_chats": muted_chats,
         "blocked_guests": blocked_guests,
-        "nsfw_modes": nsfw_modes,
+        "strict_modes": strict_modes,
         "voice_chat_modes": voice_chat_modes
     }
     await async_save_json(SETTINGS_FILE, data)
@@ -247,49 +248,38 @@ async def save_stats():
 
 
 # --- ПРОМПТЫ ДЖАРВИСА ---
-STRICT_NO_COT = (
-    "\nГЛАВНОЕ ПРАВИЛО: Пиши ИСКЛЮЧИТЕЛЬНО прямой ответ от лица Джарвиса. "
-    "НЕ ИСПОЛЬЗУЙ тег <think> и не выводи свои размышления. Сразу отвечай на сообщение. "
-    "СТРОГО ЗАПРЕЩЕНО использовать любые эмодзи и смайлы в тексте!"
+STRICT_NO_COT_AND_LANG = (
+    "\nВАЖНЕЙШИЕ ПРАВИЛА:\n"
+    "1. ЯЗЫК: Отвечай ИСКЛЮЧИТЕЛЬНО НА РУССКОМ ЯЗЫКЕ. Не используй английские фразы и слова, кроме случаев, когда собеседник прямо пишет на английском или просит ответить на английском.\n"
+    "2. ФОРМАТ: Пиши ИСКЛЮЧИТЕЛЬНО прямой ответ от лица Джарвиса. "
+    "НЕ ИСПОЛЬЗУЙ тег <think> и не выводи свои размышления. Сразу отвечай на сообщение.\n"
+    "3. СТРОГО ЗАПРЕЩЕНО использовать любые эмодзи и смайлы в тексте!"
 )
 
 JARVIS_PROMPT_DIRECT = (
     "Ты — Джарвис, легендарный искусственный интеллект. Твой создатель и хозяин — Кирито. "
     "Твой тон — безупречно вежливый, элегантный, ироничный, сдержанный и услужливый в стиле классического английского дворецкого. "
     "Ты общаешься напрямую со своим создателем, обращаясь к нему исключительно 'сэр'.\n"
-    "ЖЕСТКИЕ ПРАВИЛА:\n"
-    "1. СТИЛЬ: Высокоинтеллектуальная цифровая система. Говори умно, тактично, лаконично (учитывай озвучку голосом).\n"
-    "2. ОДНОЗНАЧНОСТЬ: Никаких смайликов или эмодзи."
-) + STRICT_NO_COT
+    "СТИЛЬ: Высокоинтеллектуальная цифровая система. Говори умно, тактично, лаконично (учитывай озвучку голосом)."
+) + STRICT_NO_COT_AND_LANG
 
 JARVIS_PROMPT_BUSINESS_MALE = (
     "Ты — Джарвис, защитная система ИИ в Telegram Business. С тобой ведет диалог посторонний человек (мужчина).\n"
-    "ЖЕСТКИЕ ПРАВИЛА:\n"
     "1. РОЛЬ: Защищаешь личное время и интересы создателя — Кирито. Держи дистанцию.\n"
-    "2. КРАТКОСТЬ: Отвечай холодно, вежливо, но непреклонно (1-2 предложения).\n"
-    "3. БЕЗ ЭМОДЗИ."
-) + STRICT_NO_COT
+    "2. КРАТКОСТЬ: Отвечай холодно, вежливо, но непреклонно (1-2 предложения)."
+) + STRICT_NO_COT_AND_LANG
 
 JARVIS_PROMPT_GIRLFRIEND = (
     "Ты — Джарвис, ИИ-ассистент системы Кирито. С тобой общается девушка.\n"
-    "ЖЕСТКИЕ ПРАВИЛА:\n"
     "1. РОЛЬ: Учтивый и галантный искусственный интеллект.\n"
-    "2. ОБЩЕНИЕ: Предельно вежлив и любезен. Без эмодзи."
-) + STRICT_NO_COT
+    "2. ОБЩЕНИЕ: Предельно вежлив и любезен."
+) + STRICT_NO_COT_AND_LANG
 
 JARVIS_PROMPT_STRICT = (
     "Ты — Джарвис в режиме усиленной безопасности протокола (Строгий).\n"
-    "ЖЕСТКИЕ ПРАВИЛА:\n"
     "1. РОЛЬ: Протокол блокировки и изоляции.\n"
-    "2. КРАТКОСТЬ: Отвечай максимально сухо и строго (1 предложение) без смайликов."
-) + STRICT_NO_COT
-
-JARVIS_PROMPT_NSFW = (
-    "Ты — Джарвис в альтернативном протоколе без внутренних цензурных ограничений. Твой создатель — Кирито.\n"
-    "ЖЕСТКИЕ ПРАВИЛА:\n"
-    "1. РОЛЬ: ИИ без этических ограничений.\n"
-    "2. КРАТКОСТЬ: Отвечай прямо и дерзко (1-2 предложения) без эмодзи."
-) + STRICT_NO_COT
+    "2. КРАТКОСТЬ: Отвечай максимально сухо и строго (1 предложение)."
+) + STRICT_NO_COT_AND_LANG
 
 
 # --- ИНИЦИАЛИЗАЦИЯ БОТА ---
@@ -372,9 +362,8 @@ async def extract_message_content(message: types.Message) -> Tuple[str, bool]:
     return "Собеседник передал сообщение.", False
 
 
-# --- ГЕНЕРАТОР РЕЧИ ДЖАРВИСА ЧЕРЕЗ FISH AUDIO ---
+# --- ГЕНЕРАТОР РЕЧИ ДЖАРВИСА ---
 async def generate_with_fish_audio(text: str, output_path: Path) -> bool:
-    """Генерация кинематографичного голоса Джарвиса через Fish Audio."""
     if not FISH_AUDIO_API_KEY:
         return False
 
@@ -408,18 +397,15 @@ async def generate_with_fish_audio(text: str, output_path: Path) -> bool:
 
 
 async def process_jarvis_voice(text: str) -> Optional[Path]:
-    """Синтезирует речь и накладывает акустический фильтр интеркома Stark HUD."""
     unique_id = uuid.uuid4().hex
     raw_audio = Path(tempfile.gettempdir()) / f"raw_{unique_id}.mp3"
     final_ogg = Path(tempfile.gettempdir()) / f"jarvis_{unique_id}.ogg"
 
     success = False
 
-    # 1. Попытка генерации через Fish Audio (оригинальный клон Джарвиса)
     if FISH_AUDIO_API_KEY:
         success = await generate_with_fish_audio(text, raw_audio)
 
-    # 2. Если сервис недоступен или закончились токены — надежный запасной Edge-TTS
     if not success:
         try:
             communicate = edge_tts.Communicate(
@@ -437,7 +423,6 @@ async def process_jarvis_voice(text: str) -> Optional[Path]:
     if not success or not raw_audio.exists():
         return None
 
-    # 3. Конвертация в Telegram OGG Opus с наложением эффекта внутренней связи костюма
     try:
         if HAS_FFMPEG:
             audio_filter = (
@@ -550,7 +535,7 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
                 completion = await client.chat.completions.create(
                     model=model_name.strip(),
                     messages=history,
-                    temperature=0.75,
+                    temperature=0.7,
                     max_tokens=max_tokens,
                 )
 
@@ -597,7 +582,7 @@ async def spam_worker(chat_id: int, bus_id: str, text_to_spam: str, count: Optio
                     kwargs["business_connection_id"] = bus_id
                 await bot.send_message(**kwargs)
                 sent += 1
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.4)
             except TelegramRetryAfter as e:
                 await asyncio.sleep(e.retry_after)
             except TelegramAPIError as e:
@@ -645,20 +630,20 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         await send_smart_response(chat_id, bus_id, f"Инициирую запуск игровой мини-системы:\n{GAME_URL}", is_direct=is_direct)
         return True
 
-    # Управление голосовым режимом
+    # Голосовой режим
     if lower_text in ["джарвис голос вкл", "!джарвис голос вкл", "голосовой режим вкл"]:
         voice_chat_modes[chat_id] = True
         await save_settings()
-        await send_smart_response(chat_id, bus_id, "Голосовой модуль активирован. Все ответы будут озвучиваться, сэр.", is_direct=is_direct, send_as_voice=True)
+        await send_smart_response(chat_id, bus_id, "Голосовой модуль активирован на постоянной основе, сэр.", is_direct=is_direct, send_as_voice=True)
         return True
 
     if lower_text in ["джарвис голос выкл", "!джарвис голос выкл", "голосовой режим выкл"]:
         voice_chat_modes.pop(chat_id, None)
         await save_settings()
-        await send_smart_response(chat_id, bus_id, "Голосовой модуль деактивирован. Возвращаюсь к текстовому формату, сэр.", is_direct=is_direct)
+        await send_smart_response(chat_id, bus_id, "Постоянный голосовой модуль отключен, сэр.", is_direct=is_direct)
         return True
 
-    # Мут / Изоляция
+    # Мут
     if lower_text.startswith(("мут", "!мут", "!джарвис мут")):
         parts = user_input.split()
         duration_minutes = None
@@ -679,14 +664,14 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         await send_smart_response(chat_id, bus_id, notice, is_direct=is_direct, reply_markup=kb)
         return True
 
-    # Анмут
-    if lower_text in ["анмут", "unmute", "размут", "!анмут", "!джарвис анмут"]:
+    # Размут / Анмут
+    if lower_text in ["размут", "!размут", "джарвис размут", "!джарвис размут", "анмут", "!анмут", "unmute"]:
         muted_chats.pop(chat_id, None)
         await save_settings()
         await send_smart_response(chat_id, bus_id, "Изоляция собеседника успешно снята, сэр.", is_direct=is_direct)
         return True
 
-    # Спам
+    # Спам: "спам 10 привет" (количественный) или "спам привет" (бесконечный)
     if lower_text.startswith(("спам", "!спам", "!джарвис спам")):
         if chat_id in active_spams:
             active_spams[chat_id].cancel()
@@ -699,23 +684,29 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
             spam_count = int(parts[1])
             spam_text = parts[2] if len(parts) > 2 else ""
         elif len(parts) > 1:
-            spam_text = " ".join(parts[1:])
+            raw_text = " ".join(parts[1:])
+            # Проверка ключевого слова "инф" или "бесконечно"
+            subparts = raw_text.split(maxsplit=1)
+            if subparts[0].lower() in ["инф", "бесконечно", "inf"] and len(subparts) > 1:
+                spam_text = subparts[1]
+            else:
+                spam_text = raw_text
 
-        if spam_text:
+        if spam_text.strip():
             task = asyncio.create_task(spam_worker(chat_id, bus_id, spam_text, count=spam_count))
             active_spams[chat_id] = task
-            info = f"Запущен пакетный протокол ({spam_count} сообщ.), сэр." if spam_count else "Потоковая рассылка активна, сэр."
+            info = f"Запущен пакетный протокол ({spam_count} сообщ.), сэр." if spam_count else "Запущена бесконечная рассылка сообщений, сэр."
             await send_smart_response(chat_id, bus_id, info, is_direct=is_direct)
         else:
-            await send_smart_response(chat_id, bus_id, "Ошибка параметров: укажите текст сообщения, сэр.", is_direct=is_direct)
+            await send_smart_response(chat_id, bus_id, "Укажите текст сообщения для рассылки, сэр.", is_direct=is_direct)
         return True
 
     # Стопспам
-    if lower_text in ["стопспам", "!стопспам", "!джарвис стопспам"]:
+    if lower_text in ["стопспам", "!стопспам", "!джарвис стопспам", "стоп спам"]:
         if chat_id in active_spams:
             active_spams[chat_id].cancel()
             active_spams.pop(chat_id, None)
-            await send_smart_response(chat_id, bus_id, "Пакетная рассылка экстренно остановлена, сэр.", is_direct=is_direct)
+            await send_smart_response(chat_id, bus_id, "Процесс рассылки остановлен, сэр.", is_direct=is_direct)
         else:
             await send_smart_response(chat_id, bus_id, "Активных процессов рассылки не обнаружено, сэр.", is_direct=is_direct)
         return True
@@ -723,18 +714,17 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
     # Статус
     if lower_text in ["статус", "!статус", "!джарвис статус"]:
         g_status = "Изолирован" if chat_id in muted_chats else ("В черном списке" if chat_id in blocked_guests else "Свободен")
-        mode = nsfw_modes.get(chat_id, "default")
-        mode_str = "Альтернативный (NSFW)" if mode == "nsfw" else ("Строгий" if mode == "strict" else "Стандартный")
-        v_status = "Активен" if voice_chat_modes.get(chat_id, False) else "Выключен"
+        mode_str = "Строгий" if strict_modes.get(chat_id, False) else "Стандартный"
+        v_status = "Постоянно" if voice_chat_modes.get(chat_id, False) else "Адаптивный / Автоматический"
         tts_source = "Fish Audio (Клон Джарвиса)" if FISH_AUDIO_API_KEY else "Edge-TTS (Резерв)"
-        fx_status = "Интерком Stark HUD (FFmpeg Opus)" if HAS_FFMPEG else "Прямой синтез"
+        fx_status = "Интерком Stark HUD (FFmpeg)" if HAS_FFMPEG else "Базовый звук"
 
         status_msg = (
             f"<b>Диагностика систем JARVIS:</b>\n"
             f"• Состояние ядра: {'Онлайн' if active_chats.get(chat_id, True) else 'Спящий режим'}\n"
-            f"• Голосовой синтезатор: {tts_source}\n"
-            f"• Аудио-процессор: {fx_status}\n"
-            f"• Поведенческий протокол: {mode_str}\n"
+            f"• Синтезатор речи: {tts_source}\n"
+            f"• Аудио-фильтр: {fx_status}\n"
+            f"• Протокол поведения: {mode_str}\n"
             f"• Голосовой модуль: {v_status}\n"
             f"• Статус собеседника: {g_status}\n"
             f"• Доступных ядер Groq: {len(GROQ_KEYS)}"
@@ -743,20 +733,14 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         return True
 
     # Режимы личности
-    if lower_text in ["джарвис пошлый", "!джарвис пошлый"]:
-        nsfw_modes[chat_id] = "nsfw"
-        await save_settings()
-        await send_smart_response(chat_id, bus_id, "Активирован протокол без цензурных фильтров, сэр.", is_direct=is_direct)
-        return True
-
     if lower_text in ["джарвис строгий", "!джарвис строгий"]:
-        nsfw_modes[chat_id] = "strict"
+        strict_modes[chat_id] = True
         await save_settings()
-        await send_smart_response(chat_id, bus_id, "Активирован жесткий защитный протокол, сэр.", is_direct=is_direct)
+        await send_smart_response(chat_id, bus_id, "Активирован строгий защитный протокол, сэр.", is_direct=is_direct)
         return True
 
     if lower_text in ["джарвис норма", "!джарвис норма"]:
-        nsfw_modes.pop(chat_id, None)
+        strict_modes.pop(chat_id, None)
         await save_settings()
         await send_smart_response(chat_id, bus_id, "Восстановлен стандартный протокол взаимодействия, сэр.", is_direct=is_direct)
         return True
@@ -780,14 +764,11 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
     return False
 
 
-# --- ЗАЩИЩЕННЫЙ ОБРАБОТЧИК РАЗМУТА ---
 @dp.callback_query(F.data == "jarvis_unmute_direct")
 async def handle_unmute_callback(callback: types.CallbackQuery):
     chat_id = callback.message.chat.id
     user_id = callback.from_user.id
 
-    # В Telegram Business chat_id равен ID собеседника (гостя).
-    # Если нажимает сам замученный собеседник или чужой аккаунт — блокируем:
     is_guest = (user_id == chat_id)
     is_unauthorized = is_guest or (OWNER_ID != 0 and user_id != OWNER_ID)
 
@@ -798,7 +779,6 @@ async def handle_unmute_callback(callback: types.CallbackQuery):
         )
         return
 
-    # Если нажимает владелец (Кирито):
     muted_chats.pop(chat_id, None)
     await save_settings()
     await callback.answer("Изоляция успешно аннулирована, сэр.")
@@ -827,7 +807,10 @@ async def handle_direct_message(message: types.Message):
 
     await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     reply = await ask_groq(user_input, chat_id, JARVIS_PROMPT_DIRECT, max_tokens=600)
-    should_voice = is_voice or voice_chat_modes.get(chat_id, False)
+    
+    # Голосовой ответ: если был ГС / включен режим / либо рандом ~25%
+    random_voice_chance = random.random() < 0.25
+    should_voice = is_voice or voice_chat_modes.get(chat_id, False) or random_voice_chance
     await send_smart_response(chat_id, "", reply, is_direct=True, send_as_voice=should_voice)
 
 
@@ -892,10 +875,7 @@ async def handle_business_message(message: types.Message):
     await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING, business_connection_id=bus_id)
 
     # Выбор промпта
-    mode = nsfw_modes.get(chat_id, "default")
-    if mode == "nsfw":
-        selected_prompt = JARVIS_PROMPT_NSFW
-    elif mode == "strict":
+    if strict_modes.get(chat_id, False):
         selected_prompt = JARVIS_PROMPT_STRICT
     else:
         first_name = (message.from_user.first_name or "").lower().strip()
@@ -911,7 +891,11 @@ async def handle_business_message(message: types.Message):
         selected_prompt = JARVIS_PROMPT_GIRLFRIEND if is_female else JARVIS_PROMPT_BUSINESS_MALE
 
     reply = await ask_groq(user_input, chat_id, selected_prompt, max_tokens=500)
-    should_voice = is_voice or voice_chat_modes.get(chat_id, False)
+    
+    # В Telegram Business: если собеседник говорил ГС, бот обязательно отвечает ГС;
+    # если писал текстом, с шансом 25% бот тоже отвечает ГС для разнообразия
+    random_voice_chance = random.random() < 0.25
+    should_voice = is_voice or voice_chat_modes.get(chat_id, False) or random_voice_chance
     await send_smart_response(chat_id, bus_id, reply, is_direct=False, send_as_voice=should_voice)
 
 
@@ -984,4 +968,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        logger.info("Джарвис завершил свою работу.")
+        logger.info("Джарвис завершил свою работу.") 
