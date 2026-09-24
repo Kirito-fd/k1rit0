@@ -5,6 +5,7 @@ import logging
 import os
 import random
 import re
+import shutil
 import tempfile
 import time
 import uuid
@@ -37,23 +38,13 @@ logger = logging.getLogger("JarvisCore")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 GAME_URL = "https://kirito-fd.github.io/k1rit0/"
 
-# Профили голоса Джарвиса:
-# 1. "dub" - Русский дубляж (глубокий, бархатный, спокойный баритон)
-# 2. "brian" - Оригинальный британский ИИ Старка (говорит по-русски с легким аристократическим акцентом)
-VOICE_PROFILES = {
-    "dub": {
-        "name": "Русский дубляж (Баритон)",
-        "voice": "ru-RU-DmitryNeural",
-        "pitch": "-16Hz",
-        "rate": "-6%"
-    },
-    "brian": {
-        "name": "Оригинал (Пол Беттани / Brian)",
-        "voice": "en-US-BrianMultilingualNeural",
-        "pitch": "-12Hz",
-        "rate": "-5%"
-    }
-}
+# --- ОФИЦИАЛЬНЫЙ АКУСТИЧЕСКИЙ ПРОФИЛЬ ДЖАРВИСА ---
+OFFICIAL_VOICE = "ru-RU-DmitryNeural"
+OFFICIAL_PITCH = "-3Hz"    # Кристальный интеллигентный баритон без бубнежа
+OFFICIAL_RATE = "-3%"     # Размеренная, хладнокровная подача дворецкого
+
+# Проверка наличия FFmpeg для наложения эффекта акустики костюма Старка
+HAS_FFMPEG = shutil.which("ffmpeg") is not None
 
 # Сбор всех доступных ключей GROQ
 GROQ_KEYS = [
@@ -68,7 +59,7 @@ STATS_FILE = Path("token_stats.json")
 
 # --- СТРУКТУРА ДАННЫХ LRU ДЛЯ ДЕДУПЛИКАЦИИ ---
 class LRUSet:
-    """Циклическое множество ограниченного размера для предотвращения дублей."""
+    """Циклическое множество для предотвращения повторной обработки сообщений."""
     def __init__(self, capacity: int = 2000):
         self.capacity = capacity
         self._data: OrderedDict[int, None] = OrderedDict()
@@ -105,7 +96,6 @@ class GroqManager:
             if self.cooldowns.get(idx, 0) < now:
                 self.current_idx = idx
                 return self.clients[idx], idx
-        # Если все ключи временно ограничены, берем наименее загруженный
         min_idx = min(self.cooldowns, key=self.cooldowns.get)
         self.current_idx = min_idx
         return self.clients[min_idx], min_idx
@@ -198,25 +188,22 @@ def sync_load_json(path: Path, default_val: Any) -> Any:
     return default_val
 
 
-# Загрузка настроек
 def load_settings():
     d = sync_load_json(SETTINGS_FILE, {})
     mutes = {int(k): v for k, v in d.get("muted_chats", {}).items()}
     bans = {int(k): v for k, v in d.get("blocked_guests", {}).items()}
     modes = {int(k): v for k, v in d.get("nsfw_modes", {}).items()}
     v_modes = {int(k): v for k, v in d.get("voice_chat_modes", {}).items()}
-    v_profs = {int(k): v for k, v in d.get("chat_voice_profiles", {}).items()}
-    return mutes, bans, modes, v_modes, v_profs
+    return mutes, bans, modes, v_modes
 
-muted_chats, blocked_guests, nsfw_modes, voice_chat_modes, chat_voice_profiles = load_settings()
+muted_chats, blocked_guests, nsfw_modes, voice_chat_modes = load_settings()
 
 async def save_settings():
     data = {
         "muted_chats": muted_chats,
         "blocked_guests": blocked_guests,
         "nsfw_modes": nsfw_modes,
-        "voice_chat_modes": voice_chat_modes,
-        "chat_voice_profiles": chat_voice_profiles
+        "voice_chat_modes": voice_chat_modes
     }
     await async_save_json(SETTINGS_FILE, data)
 
@@ -227,7 +214,6 @@ user_histories: Dict[int, List[Dict[str, str]]] = {
 async def save_histories():
     await async_save_json(HISTORY_FILE, user_histories)
 
-# Статистика токенов
 today_str = datetime.date.today().isoformat()
 stats_data = sync_load_json(STATS_FILE, {})
 if stats_data.get("date") == today_str:
@@ -248,7 +234,7 @@ async def save_stats():
     await async_save_json(STATS_FILE, data)
 
 
-# --- ПРОМПТЫ СИСТЕМЫ ---
+# --- ПРОМПТЫ ДЖАРВИСА ---
 STRICT_NO_COT = (
     "\nГЛАВНОЕ ПРАВИЛО: Пиши ИСКЛЮЧИТЕЛЬНО прямой ответ от лица Джарвиса. "
     "НЕ ИСПОЛЬЗУЙ тег <think> и не выводи свои размышления! Сразу отвечай на сообщение. "
@@ -331,7 +317,7 @@ async def check_chat_flood(chat_id: int, bus_id: str, max_msgs: int = 4, window_
         muted_chats[chat_id] = now + 300
         await save_settings()
 
-        notice = "Протокол безопасности: превышен лимит частоты запросов. Диалог изолирован на 5 минут, сэр."
+        notice = "Протокол безопасности: зафиксирован чрезмерный поток запросов. Собеседник изолирован на 5 минут, сэр."
         kb = InlineKeyboardMarkup(
             inline_keyboard=[[InlineKeyboardButton(text="Снять изоляцию", callback_data="jarvis_unmute_direct")]]
         )
@@ -371,6 +357,31 @@ async def extract_message_content(message: types.Message) -> Tuple[str, bool]:
         return "Собеседник прикрепил видеофайл.", False
     return "Собеседник передал сообщение.", False
 
+async def apply_jarvis_helmet_fx(input_path: Path, output_path: Path) -> bool:
+    """Накладывает фирменную эквализацию шлема/акустики лаборатории Старка."""
+    if not HAS_FFMPEG:
+        return False
+    
+    # Срезаем лишний гул, подчеркиваем четкость речи и добавляем микро-резонанс 20ms
+    audio_filter = "highpass=f=180,lowpass=f=9500,equalizer=f=2800:width_type=q:w=1.2:g=3.2,aecho=0.85:0.7:20:0.25"
+    cmd = [
+        "ffmpeg", "-y", "-i", str(input_path),
+        "-af", audio_filter,
+        "-b:a", "192k",
+        str(output_path)
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL
+        )
+        await proc.wait()
+        return output_path.exists() and output_path.stat().st_size > 0
+    except Exception as e:
+        logger.error(f"Сбой FFmpeg FX: {e}")
+        return False
+
 async def send_smart_response(
     chat_id: int,
     bus_id: str,
@@ -393,27 +404,33 @@ async def send_smart_response(
         common_kwargs["business_connection_id"] = bus_id
 
     if send_as_voice:
-        audio_temp = Path(tempfile.gettempdir()) / f"tts_{chat_id}_{uuid.uuid4().hex}.mp3"
+        unique_id = uuid.uuid4().hex
+        audio_raw = Path(tempfile.gettempdir()) / f"tts_raw_{chat_id}_{unique_id}.mp3"
+        audio_fx = Path(tempfile.gettempdir()) / f"tts_fx_{chat_id}_{unique_id}.mp3"
         try:
-            # Выбор профиля голоса (по умолчанию "dub")
-            profile_key = chat_voice_profiles.get(chat_id, "dub")
-            profile = VOICE_PROFILES.get(profile_key, VOICE_PROFILES["dub"])
-
+            # Генерация официальным голосом Джарвиса
             communicate = edge_tts.Communicate(
                 reply_text,
-                profile["voice"],
-                pitch=profile["pitch"],
-                rate=profile["rate"]
+                OFFICIAL_VOICE,
+                pitch=OFFICIAL_PITCH,
+                rate=OFFICIAL_RATE
             )
-            await communicate.save(str(audio_temp))
-            voice_file = FSInputFile(str(audio_temp))
+            await communicate.save(str(audio_raw))
+
+            final_path = audio_raw
+            if await apply_jarvis_helmet_fx(audio_raw, audio_fx):
+                final_path = audio_fx
+
+            voice_file = FSInputFile(str(final_path))
             await bot.send_voice(**common_kwargs, voice=voice_file)
             return
         except Exception as e:
-            logger.error(f"Сбой синтеза Edge TTS: {e}. Переход на текст.")
+            logger.error(f"Сбой синтеза речи: {e}. Переход на текст.")
         finally:
-            if audio_temp.exists():
-                audio_temp.unlink(missing_ok=True)
+            if audio_raw.exists():
+                audio_raw.unlink(missing_ok=True)
+            if audio_fx.exists():
+                audio_fx.unlink(missing_ok=True)
 
     try:
         await bot.send_message(**common_kwargs, text=reply_text, parse_mode="HTML")
@@ -554,30 +571,17 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         await send_smart_response(chat_id, bus_id, f"Инициирую запуск игровой мини-системы:\n{GAME_URL}", is_direct=is_direct)
         return True
 
-    # Переключение голосового режима
+    # Управление голосовым режимом
     if lower_text in ["джарвис голос вкл", "!джарвис голос вкл", "голосовой режим вкл"]:
         voice_chat_modes[chat_id] = True
         await save_settings()
-        await send_smart_response(chat_id, bus_id, "Голосовой режим активирован. Все ответы будут озвучиваться, сэр.", is_direct=is_direct, send_as_voice=True)
+        await send_smart_response(chat_id, bus_id, "Голосовой модуль активирован. Все ответы будут озвучиваться, сэр.", is_direct=is_direct, send_as_voice=True)
         return True
 
     if lower_text in ["джарвис голос выкл", "!джарвис голос выкл", "голосовой режим выкл"]:
         voice_chat_modes.pop(chat_id, None)
         await save_settings()
-        await send_smart_response(chat_id, bus_id, "Голосовой режим деактивирован. Возврат к текстовому формату, сэр.", is_direct=is_direct)
-        return True
-
-    # Переключение акустического профиля Джарвиса
-    if lower_text in ["!голос оригинал", "!джарвис голос оригинал", "голос оригинал"]:
-        chat_voice_profiles[chat_id] = "brian"
-        await save_settings()
-        await send_smart_response(chat_id, bus_id, "Акустический модуль переключен на оригинальный британский протокол Пола Беттани, сэр.", is_direct=is_direct, send_as_voice=True)
-        return True
-
-    if lower_text in ["!голос дубляж", "!джарвис голос дубляж", "голос дубляж"]:
-        chat_voice_profiles[chat_id] = "dub"
-        await save_settings()
-        await send_smart_response(chat_id, bus_id, "Акустический модуль переключен на глубокий бархатный протокол дубляжа, сэр.", is_direct=is_direct, send_as_voice=True)
+        await send_smart_response(chat_id, bus_id, "Голосовой модуль деактивирован. Возвращаюсь к текстовому формату, сэр.", is_direct=is_direct)
         return True
 
     # Мут / Изоляция
@@ -637,7 +641,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         if chat_id in active_spams:
             active_spams[chat_id].cancel()
             active_spams.pop(chat_id, None)
-            await send_smart_response(chat_id, bus_id, "Пакетная рассылка сообщений экстренно остановлена, сэр.", is_direct=is_direct)
+            await send_smart_response(chat_id, bus_id, "Пакетная рассылка экстренно остановлена, сэр.", is_direct=is_direct)
         else:
             await send_smart_response(chat_id, bus_id, "Активных процессов рассылки не обнаружено, сэр.", is_direct=is_direct)
         return True
@@ -648,16 +652,16 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         mode = nsfw_modes.get(chat_id, "default")
         mode_str = "Альтернативный (NSFW)" if mode == "nsfw" else ("Строгий" if mode == "strict" else "Стандартный")
         v_status = "Активен" if voice_chat_modes.get(chat_id, False) else "Выключен"
-        prof_name = VOICE_PROFILES.get(chat_voice_profiles.get(chat_id, "dub"), VOICE_PROFILES["dub"])["name"]
+        fx_status = "Акустика Stark HUD (FFmpeg)" if HAS_FFMPEG else "Прямой синтез"
 
         status_msg = (
             f"<b>Диагностика систем JARVIS:</b>\n"
             f"• Состояние ядра: {'Онлайн' if active_chats.get(chat_id, True) else 'Спящий режим'}\n"
             f"• Поведенческий протокол: {mode_str}\n"
-            f"• Голосовой режим: {v_status}\n"
-            f"• Акустический тембр: {prof_name}\n"
+            f"• Голосовой модуль: {v_status}\n"
+            f"• Аудио-процессор: {fx_status}\n"
             f"• Статус собеседника: {g_status}\n"
-            f"• Доступных вычислительных ядер: {len(GROQ_KEYS)}"
+            f"• Доступных ядер Groq: {len(GROQ_KEYS)}"
         )
         await send_smart_response(chat_id, bus_id, status_msg, is_direct=is_direct)
         return True
@@ -799,7 +803,7 @@ async def handle_business_message(message: types.Message):
     elif mode == "strict":
         selected_prompt = JARVIS_PROMPT_STRICT
     else:
-        # Улучшенная эвристика определения пола собеседника
+        # Улучшенное определение пола собеседника
         first_name = (message.from_user.first_name or "").lower().strip()
         username = (message.from_user.username or "").lower().strip()
 
@@ -867,12 +871,12 @@ async def main():
 
     try:
         await bot.delete_webhook(drop_pending_updates=True)
-        logger.info("Джарвис успешно инициализирован и слушает эфир!")
+        logger.info("Джарвис успешно инициализирован с официальным голосом!")
         await dp.start_polling(bot)
     except TelegramConflictError:
         logger.critical(
             "Конфликт сессий! Запущен второй экземпляр бота. "
-            "Завершите все лишние процессы python и проверьте другие терминалы/хостинги."
+            "Завершите лишние процессы python и проверьте другие терминалы/хостинги."
         )
     finally:
         cleaner_task.cancel()
