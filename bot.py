@@ -13,12 +13,14 @@ from aiogram.methods import DeleteBusinessMessages
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiohttp import web
 
-# --- НАСТРОЙКИ ПЕРЕМЕННЫХ ---
+# --- НАСТРОЙКИ ПЕРЕМЕННЫХ И ГОЛОСА ДЖАРВИСА ---
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 GAME_URL = "https://kirito-fd.github.io/k1rit0/"
 
-# Нейроголос для Джарвиса (глубокий мужской голос)
+# Профиль голоса: глубина и стиль речи дворецкого
 TTS_VOICE = "ru-RU-DmitryNeural"
+TTS_PITCH = "-10Hz"  # Опускаем тон для солидного низкого звучания
+TTS_RATE = "+2%"     # Легкая корректировка темпа для размеренной дикции
 
 # --- УНИВЕРСАЛЬНЫЙ АВТОМАТИЧЕСКИЙ СБОР ВСЕХ КЛЮЧЕЙ GROQ ---
 GROQ_KEYS = [
@@ -297,7 +299,14 @@ async def send_smart_response(chat_id: int, bus_id: str, reply_text: str, is_dir
     if send_as_voice:
         try:
             audio_path = f"response_{chat_id}.mp3"
-            communicate = edge_tts.Communicate(reply_text, TTS_VOICE)
+            
+            # Генерация речи с тональной модуляцией Джарвиса
+            communicate = edge_tts.Communicate(
+                reply_text, 
+                TTS_VOICE, 
+                pitch=TTS_PITCH, 
+                rate=TTS_RATE
+            )
             await communicate.save(audio_path)
             
             voice_file = FSInputFile(audio_path)
@@ -727,7 +736,7 @@ async def main():
     await start_web_server()
     asyncio.create_task(cleaner_background_task())
     await bot.delete_webhook(drop_pending_updates=True)
-    print("Искусственный интеллект Джарвис успешно запущен в сверхлегком режиме!")
+    print("Искусственный интеллект Джарвис успешно запущен в облегченном режиме!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
