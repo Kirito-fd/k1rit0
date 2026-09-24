@@ -1,5 +1,7 @@
 import asyncio
+import base64
 import datetime
+import io
 import json
 import logging
 import os
@@ -40,6 +42,9 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 GAME_URL = "https://kirito-fd.github.io/k1rit0/"
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
+# Время неактивности хозяина (в секундах), после которого Джарвис начинает отвечать (5 минут = 300 сек)
+OWNER_IDLE_TIMEOUT = 300
+
 # --- ПАРАМЕТРЫ КЛОНА ДЖАРВИСА (FISH AUDIO) ---
 FISH_AUDIO_API_KEY = os.getenv("FISH_AUDIO_API_KEY", "").strip()
 FISH_AUDIO_VOICE_ID = os.getenv("FISH_AUDIO_VOICE_ID", "680d74fbef69419f87cfc70f092a1451").strip()
@@ -61,6 +66,9 @@ GROQ_KEYS = [
 SETTINGS_FILE = Path("bot_settings.json")
 HISTORY_FILE = Path("user_histories.json")
 STATS_FILE = Path("token_stats.json")
+
+# Глобальный таймер активности владельца
+last_owner_activity = 0.0
 
 
 # --- LRU КЭШ ---
@@ -165,6 +173,51 @@ class GroqManager:
                 logger.error(f"Ошибка STT Whisper: {e}")
                 break
         return "Приветствую, сэр."
+
+    async def describe_image(self, image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
+        """Зрительное распознавание фото и стикеров через Llama Vision."""
+        b64 = base64.b64encode(image_bytes).decode("utf-8")
+        data_url = f"data:{mime_type};base64,{b64}"
+
+        vision_messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Опиши кратко на русском языке (1-2 предложения), что изображено на этом изображении или стикере. Если там мем, текст или персонаж, укажи это."
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": data_url}
+                    }
+                ]
+            }
+        ]
+
+        for _ in range(len(self.clients)):
+            client_data = self._get_next_client()
+            if not client_data:
+                break
+            client, idx = client_data
+            try:
+                completion = await client.chat.completions.create(
+                    model="llama-3.2-11b-vision-preview",
+                    messages=vision_messages,
+                    max_tokens=150,
+                    temperature=0.3
+                )
+                desc = completion.choices[0].message.content or ""
+                return desc.strip()
+            except APIError as e:
+                if e.status_code in [429, 401, 403]:
+                    self.mark_cooldown(idx, duration=60)
+                    continue
+                break
+            except Exception as e:
+                logger.error(f"Ошибка распознавания зрения: {e}")
+                break
+        return "Изображение/стикер получен, но детали не удалось рассмотреть."
 
 
 groq_mgr = GroqManager(GROQ_KEYS)
@@ -336,11 +389,10 @@ async def check_chat_flood(chat_id: int, bus_id: str, max_msgs: int = 4, window_
 
 
 async def extract_message_content(message: types.Message) -> Tuple[str, bool]:
-    if message.text:
-        return message.text, False
-    if message.caption:
-        return message.caption, False
+    """Извлекает текст, расшифровывает аудио и распознает фото/стикеры через Groq Vision."""
+    caption_text = f" Подпись: {message.caption}" if message.caption else ""
 
+    # Голосовые сообщения / кружочки
     if message.voice or message.video_note:
         file_obj = message.voice or message.video_note
         file_info = await bot.get_file(file_obj.file_id)
@@ -355,10 +407,43 @@ async def extract_message_content(message: types.Message) -> Tuple[str, bool]:
             if temp_audio.exists():
                 temp_audio.unlink(missing_ok=True)
 
+    # Фотографии
     if message.photo:
-        return "Собеседник прикрепил фото.", False
+        photo = message.photo[-1]
+        file_info = await bot.get_file(photo.file_id)
+        buf = io.BytesIO()
+        try:
+            await bot.download_file(file_info.file_path, destination=buf)
+            img_desc = await groq_mgr.describe_image(buf.getvalue(), mime_type="image/jpeg")
+            return f"[Собеседник отправил фотографию. На ней изображено: {img_desc}]{caption_text}", False
+        except Exception as e:
+            logger.error(f"Не удалось обработать фото: {e}")
+            return f"[Собеседник отправил фото]{caption_text}", False
+
+    # Стикеры
+    if message.sticker:
+        sticker_emoji = message.sticker.emoji or "без эмодзи"
+        file_id = message.sticker.file_id
+        # Для анимированных/видео берем превью-картинку (thumbnail)
+        if message.sticker.thumbnail:
+            file_id = message.sticker.thumbnail.file_id
+
+        try:
+            file_info = await bot.get_file(file_id)
+            buf = io.BytesIO()
+            await bot.download_file(file_info.file_path, destination=buf)
+            mime = "image/webp" if file_info.file_path.endswith(".webp") else "image/jpeg"
+            sticker_desc = await groq_mgr.describe_image(buf.getvalue(), mime_type=mime)
+            return f"[Собеседник отправил стикер (эмодзи: {sticker_emoji}). Визуальное содержание: {sticker_desc}]", False
+        except Exception as e:
+            logger.error(f"Не удалось распознать стикер: {e}")
+            return f"[Собеседник отправил стикер с эмодзи: {sticker_emoji}]", False
+
+    if message.text:
+        return message.text, False
     if message.video:
-        return "Собеседник прикрепил видео.", False
+        return f"Собеседник прикрепил видеозапись.{caption_text}", False
+
     return "Собеседник передал сообщение.", False
 
 
@@ -713,11 +798,16 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         tts_source = "Fish Audio (Клон Джарвиса)" if FISH_AUDIO_API_KEY else "Edge-TTS (Резерв)"
         fx_status = "Интерком Stark HUD (FFmpeg)" if HAS_FFMPEG else "Базовый звук"
 
+        # Проверка онлайн/офлайн создателя
+        idle_diff = time.time() - last_owner_activity
+        owner_status = f"В сети (был {int(idle_diff)} сек. назад)" if idle_diff < OWNER_IDLE_TIMEOUT else "Не в сети (автоответ активен)"
+
         status_msg = (
             f"<b>Диагностика систем JARVIS:</b>\n"
+            f"• Статус создателя: <b>{owner_status}</b>\n"
+            f"• Зрение: Groq Llama 3.2 Vision (Фото и Стикеры)\n"
             f"• Состояние ядра: {'Онлайн' if active_chats.get(chat_id, True) else 'Спящий режим'}\n"
             f"• Синтезатор речи: {tts_source}\n"
-            f"• Аудио-фильтр: {fx_status}\n"
             f"• Протокол поведения: {mode_str}\n"
             f"• Голосовой модуль: {v_status}\n"
             f"• Статус собеседника: {g_status}\n"
@@ -785,10 +875,15 @@ async def handle_unmute_callback(callback: types.CallbackQuery):
 # --- ОБРАБОТЧИК ЛИЧНЫХ СООБЩЕНИЙ С БОТОМ (ПРЯМОЙ ДИАЛОГ) ---
 @dp.message(F.business_connection_id.is_(None))
 async def handle_direct_message(message: types.Message):
+    global last_owner_activity
+
     if not message.from_user or message.from_user.is_bot:
         return
 
     chat_id = message.chat.id
+    # Фиксируем активность владельца
+    last_owner_activity = time.time()
+
     user_input, is_voice = await extract_message_content(message)
     if not user_input.strip():
         return
@@ -803,7 +898,6 @@ async def handle_direct_message(message: types.Message):
     await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     reply = await ask_groq(user_input, chat_id, JARVIS_PROMPT_DIRECT, max_tokens=600)
     
-    # Голосовой ответ: если был голос, включен режим или случайный шанс 25%
     random_voice_chance = random.random() < 0.25
     should_voice = is_voice or voice_chat_modes.get(chat_id, False) or random_voice_chance
     await send_smart_response(chat_id, "", reply, is_direct=True, send_as_voice=should_voice)
@@ -812,16 +906,18 @@ async def handle_direct_message(message: types.Message):
 # --- ОБРАБОТЧИК ТЕЛЕГРАМ БИЗНЕС СООБЩЕНИЙ ---
 @dp.business_message()
 async def handle_business_message(message: types.Message):
+    global last_owner_activity
+
     chat_id = message.chat.id
     bus_id = message.business_connection_id
     msg_id = message.message_id
     bot_id = bot.id if bot else 0
 
-    # 1. ЗАЩИТА ОТ САМОПЕРЕПИСКИ: игнорировать любых ботов
+    # 1. ЗАЩИТА: игнорировать ботов и самого себя
     if not message.from_user or message.from_user.is_bot or message.from_user.id == bot_id:
         return
 
-    # 2. ЗАЩИТА: Если это чат с самим ботом или "Избранное" владельца — ничего не делать
+    # 2. ЗАЩИТА: не трогать чат с самим ботом и "Избранное"
     if chat_id == bot_id or (OWNER_ID != 0 and chat_id == OWNER_ID):
         return
 
@@ -829,28 +925,32 @@ async def handle_business_message(message: types.Message):
         return
     processed_message_ids.add(msg_id)
 
-    # Определение: пишет хозяин или гость
+    # Определение владельца
     is_owner = (OWNER_ID != 0 and message.from_user.id == OWNER_ID) or (message.from_user.id != chat_id)
     is_guest = not is_owner
 
-    user_input, is_voice = await extract_message_content(message)
-    if not user_input.strip():
-        return
-
-    # Если хозяин ввел команду бота (!мут, !спам и т.д.)
-    if await process_bot_command(message, user_input, is_owner=is_owner, bus_id=bus_id):
-        if is_owner:
+    # Если сообщение написал владелец — обновляем таймер «В сети»!
+    if is_owner:
+        last_owner_activity = time.time()
+        user_input, _ = await extract_message_content(message)
+        if await process_bot_command(message, user_input, is_owner=True, bus_id=bus_id):
             try:
                 await bot(DeleteBusinessMessages(business_connection_id=bus_id, message_ids=[msg_id]))
             except Exception:
                 pass
         return
 
-    # Если сообщение от владельца — бот не должен на него отвечать в бизнес-чате!
-    if not active_chats.get(chat_id, True) or is_owner:
+    # 3. АВТОМАТИЧЕСКИЙ СТАТУС ОНЛАЙН:
+    # Если хозяин писал что-то менее OWNER_IDLE_TIMEOUT (5 минут) назад — бот молчит!
+    now = time.time()
+    if (now - last_owner_activity) < OWNER_IDLE_TIMEOUT:
         return
 
-    # Проверка изоляции гостя
+    # Если чат отключен командой "джарвис выкл"
+    if not active_chats.get(chat_id, True):
+        return
+
+    # Проверка изоляции
     if is_guest and chat_id in muted_chats:
         m_time = muted_chats[chat_id]
         if m_time == float('inf') or time.time() < m_time:
@@ -880,9 +980,13 @@ async def handle_business_message(message: types.Message):
             pass
         return
 
+    user_input, is_voice = await extract_message_content(message)
+    if not user_input.strip():
+        return
+
     await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING, business_connection_id=bus_id)
 
-    # Выбор промпта для гостя
+    # Выбор промпта
     if strict_modes.get(chat_id, False):
         selected_prompt = JARVIS_PROMPT_STRICT
     else:
@@ -900,7 +1004,6 @@ async def handle_business_message(message: types.Message):
 
     reply = await ask_groq(user_input, chat_id, selected_prompt, max_tokens=500)
     
-    # Голосовой ответ
     random_voice_chance = random.random() < 0.25
     should_voice = is_voice or voice_chat_modes.get(chat_id, False) or random_voice_chance
     await send_smart_response(chat_id, bus_id, reply, is_direct=False, send_as_voice=should_voice)
