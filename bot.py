@@ -43,7 +43,7 @@ OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
 OWNER_IDLE_TIMEOUT = 300  # 5 минут неактивности до автоответа
 
-# Флаги статуса присутствия владельца
+# Флаги статуса владельца
 force_offline_mode = False
 always_answer_mode = False
 last_owner_activity = 0.0
@@ -68,20 +68,6 @@ SETTINGS_FILE = Path("bot_settings.json")
 HISTORY_FILE = Path("user_histories.json")
 STATS_FILE = Path("token_stats.json")
 
-# Флагманские умные модели текста
-SMART_TEXT_MODELS = [
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant"
-]
-
-# Пул моделей для зрения (Groq Vision)
-VISION_MODELS_POOL = [
-    "meta-llama/llama-4-scout-17b-16e-instruct",
-    "qwen/qwen3.8-27b",
-    "llama-3.2-11b-vision-preview",
-    "llama-3.2-90b-vision-preview"
-]
-
 
 # --- LRU КЭШ ---
 class LRUSet:
@@ -101,13 +87,15 @@ class LRUSet:
         return item in self._data
 
 
-# --- МЕНЕДЖЕР GROQ API ---
+# --- МЕНЕДЖЕР GROQ API (ВОССТАНОВЛЕН РОДНОЙ АВТОПОДБОР МОДЕЛЕЙ) ---
 class GroqManager:
     def __init__(self, keys: List[str]):
         self.keys = keys
         self.clients = [AsyncGroq(api_key=k) for k in keys]
         self.current_idx = 0
         self.cooldowns: Dict[int, float] = {}
+        self.cached_models: List[str] = []
+        self.last_models_update = 0.0
 
     def _get_next_client(self) -> Optional[Tuple[AsyncGroq, int]]:
         if not self.clients:
@@ -125,6 +113,41 @@ class GroqManager:
     def mark_cooldown(self, idx: int, duration: float = 60.0):
         self.cooldowns[idx] = time.time() + duration
         logger.warning(f"Ключ Groq [{idx}] переведен в кулдаун на {duration} сек.")
+
+    async def get_active_models(self) -> List[str]:
+        now = time.time()
+        if self.cached_models and (now - self.last_models_update < 1800):
+            return self.cached_models
+
+        for _ in range(len(self.clients)):
+            client_data = self._get_next_client()
+            if not client_data:
+                break
+            client, idx = client_data
+            try:
+                models_data = await client.models.list()
+                # Берем только реально существующие текстовые модели
+                valid = [
+                    m.id for m in models_data.data
+                    if not any(x in m.id.lower() for x in ["whisper", "guard", "tool", "vision", "embed"])
+                ]
+                if valid:
+                    # Сортируем: сначала самые мощные (70b, 120b, qwen, versatile)
+                    valid.sort(key=lambda x: ("70b" in x or "120b" in x or "versatile" in x), reverse=True)
+                    self.cached_models = valid
+                    self.last_models_update = now
+                    logger.info(f"Активные модели Groq: {self.cached_models}")
+                    return self.cached_models
+            except APIError as e:
+                if e.status_code in [429, 401, 403]:
+                    self.mark_cooldown(idx, duration=120)
+                    continue
+                break
+            except Exception as e:
+                logger.error(f"Ошибка проверки списка моделей: {e}")
+                break
+
+        return self.cached_models or ["llama-3.3-70b-versatile"]
 
     async def transcribe(self, audio_path: str) -> str:
         for _ in range(len(self.clients)):
@@ -161,7 +184,7 @@ class GroqManager:
                 "content": [
                     {
                         "type": "text",
-                        "text": "Что на этой картинке или стикере? Ответь предельно кратко (до 10-15 слов): опиши персонажа, надпись, эмоцию или суть мема."
+                        "text": "Что на этой картинке или стикере? Ответь предельно кратко (до 10-15 слов): опиши персонажа, надпись или суть мема."
                     },
                     {
                         "type": "image_url",
@@ -171,30 +194,30 @@ class GroqManager:
             }
         ]
 
-        for model_name in VISION_MODELS_POOL:
-            for _ in range(len(self.clients)):
-                client_data = self._get_next_client()
-                if not client_data:
-                    break
-                client, idx = client_data
-                try:
-                    completion = await client.chat.completions.create(
-                        model=model_name,
-                        messages=vision_messages,
-                        max_tokens=60,
-                        temperature=0.2
-                    )
-                    res = completion.choices[0].message.content or ""
-                    if res.strip():
-                        return res.strip()
-                except APIError as e:
-                    if e.status_code in [429, 401, 403]:
-                        self.mark_cooldown(idx, duration=60)
+        # Динамически ищем модель с vision
+        for _ in range(len(self.clients)):
+            client_data = self._get_next_client()
+            if not client_data:
+                break
+            client, idx = client_data
+            try:
+                all_m = await client.models.list()
+                v_models = [m.id for m in all_m.data if "vision" in m.id.lower() or "scout" in m.id.lower()]
+                for vm in v_models:
+                    try:
+                        completion = await client.chat.completions.create(
+                            model=vm,
+                            messages=vision_messages,
+                            max_tokens=60,
+                            temperature=0.2
+                        )
+                        res = completion.choices[0].message.content or ""
+                        if res.strip():
+                            return res.strip()
+                    except Exception:
                         continue
-                    elif e.status_code in [400, 404]:
-                        break
-                except Exception:
-                    break
+            except Exception:
+                break
         return ""
 
 
@@ -280,10 +303,9 @@ STRICT_NO_COT_AND_LANG = (
     "\nГЛАВНЫЕ ПРАВИЛА:\n"
     "1. ЯЗЫК: Отвечай ИСКЛЮЧИТЕЛЬНО на грамотном русском языке. Английский категорически запрещен.\n"
     "2. СТРОГО ЗАПРЕЩЕНО использовать любые эмодзи и смайлы.\n"
-    "3. Сразу пиши прямой ответ. Никаких рассуждений и тегов <think>."
+    "3. Сразу пиши прямой ответ. Никаких размышлений и тегов <think>."
 )
 
-# Для Кирито: сверхразумный, эрудированный и преданный дворецкий
 JARVIS_PROMPT_DIRECT = (
     "Ты — Джарвис, легендарный сверхразумный цифровой интеллект. Твой создатель и хозяин — Кирито.\n"
     "1. ОБРАЩЕНИЕ: Обращайся к нему исключительно 'сэр'. Твой стиль — преданный, элегантный, безупречно тактичный английский дворецкий.\n"
@@ -292,7 +314,6 @@ JARVIS_PROMPT_DIRECT = (
     "3. Не привязывай тему диалога к 'искусственному интеллекту', если сэр сам об этом не спросил."
 ) + STRICT_NO_COT_AND_LANG
 
-# Для посторонних: дерзкий цербер, ломающий грубиянов
 JARVIS_PROMPT_GUEST = (
     "Ты — Джарвис, охранный ИИ Кирито. Ты общаешься с посторонним человеком в Telegram.\n"
     "ХАРАКТЕР: Холодный, дерзкий, высокомерный. Ты признаешь авторитет только Кирито. Все остальные — чужаки.\n"
@@ -520,7 +541,7 @@ async def send_smart_response(
         logger.error(f"Не удалось отправить сообщение: {e}")
 
 
-# --- ИСПРАВЛЕННЫЙ ЗАПРОС К GROQ БЕЗ ОШИБОК 400 ---
+# --- ЗАПРОС К GROQ С ДИНАМИЧЕСКИМ ПОДБОРОМ И БЕЗ 404 ---
 async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens: int = 500) -> str:
     global today_prompt_tokens, today_completion_tokens, total_requests_today, stats_date
 
@@ -548,20 +569,21 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
         user_histories[session_id] = [history[0]] + history[-6:]
         history = user_histories[session_id]
 
+    # Получаем реально доступные сейчас модели с серверов Groq
+    models = await groq_mgr.get_active_models()
     last_err = ""
 
-    for model_name in SMART_TEXT_MODELS:
+    for model_name in models:
         for _ in range(len(GROQ_KEYS)):
             client_data = groq_mgr._get_next_client()
             if not client_data:
                 break
             client, key_idx = client_data
             try:
-                # Только проверенные параметры, поддерживаемые Groq API
                 completion = await client.chat.completions.create(
-                    model=model_name,
+                    model=model_name.strip(),
                     messages=history,
-                    temperature=0.6,
+                    temperature=0.65,
                     max_tokens=max_tokens
                 )
 
@@ -586,6 +608,7 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
                     groq_mgr.mark_cooldown(key_idx, duration=120)
                     continue
                 elif e.status_code in [400, 404]:
+                    # Если конкретная модель не найдена — НЕ ломаем бота, а сразу пробуем следующую из списка!
                     break
             except Exception as e:
                 last_err = str(e)
@@ -659,7 +682,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         await send_smart_response(chat_id, bus_id, f"Инициирую запуск мини-системы:\n{GAME_URL}", is_direct=is_direct)
         return True
 
-    # Управление онлайном (любые варианты написания)
+    # Управление онлайном
     if lower_text in ["джарвис я тут", "!онлайн", "!я тут", "джарвис онлайн", "я тут", "джарвис тут"]:
         force_offline_mode = False
         last_owner_activity = time.time()
@@ -761,7 +784,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         elif lower_text in ["стоп джарвис", "!стоп джарвис"]:
             user_histories.pop(chat_id, None)
             await save_histories()
-            await send_smart_response(chat_id, bus_id, "Процессы сброшены. Память текущей сессии очищена, сэр.", is_direct=is_direct)
+            await send_smart_response(chat_id, bus_id, "Процессы сброшены. Память очищена, сэр.", is_direct=is_direct)
             return True
 
     # Статус
@@ -778,10 +801,13 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         else:
             owner_status = f"В сети (был {int(idle_diff)} сек. назад)" if idle_diff < OWNER_IDLE_TIMEOUT else "Офлайн (Авто-дежурство)"
 
+        models = await groq_mgr.get_active_models()
+        primary_m = models[0] if models else "Определение..."
+
         status_msg = (
             f"<b>Диагностика JARVIS:</b>\n"
             f"• Статус хозяина: <b>{owner_status}</b>\n"
-            f"• Основная модель: Llama 3.3 70B Versatile\n"
+            f"• Активная модель: {primary_m}\n"
             f"• Зрение: Активно (Мультимодальные модели)\n"
             f"• Голос: {tts_source} ({v_status})\n"
             f"• Статус собеседника: {g_status}\n"
@@ -845,7 +871,7 @@ async def handle_direct_message(message: types.Message):
 
     await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
-    # Детектор прямой просьбы сказать голосовым сообщением
+    # Детектор голосового запроса
     voice_triggers = ["в голосовом", "голосовым", "голосом", "скажи в гс", "озвучь", "проговори"]
     forced_voice_request = any(t in user_input.lower() for t in voice_triggers)
 
@@ -896,7 +922,6 @@ async def handle_business_message(message: types.Message):
         if not force_offline_mode and (now - last_owner_activity) < OWNER_IDLE_TIMEOUT:
             return
 
-    # Проверка мута
     if is_guest and chat_id in muted_chats:
         m_time = muted_chats[chat_id]
         if m_time == float('inf') or time.time() < m_time:
@@ -909,7 +934,6 @@ async def handle_business_message(message: types.Message):
             muted_chats.pop(chat_id, None)
             await save_settings()
 
-    # Защита от флуда
     if is_guest and await check_chat_flood(chat_id, bus_id, max_msgs=4, window_seconds=6.0):
         try:
             await bot(DeleteBusinessMessages(business_connection_id=bus_id, message_ids=[msg_id]))
