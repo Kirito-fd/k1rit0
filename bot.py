@@ -35,7 +35,14 @@ from aiogram.types import (
     InlineKeyboardMarkup,
 )
 from groq import APIError, AsyncGroq
-from PIL import Image
+
+# Безопасный импорт Pillow (защита от падения билда на Render)
+try:
+    from PIL import Image
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
+    Image = None
 
 # --- ЛОГИРОВАНИЕ ---
 logging.basicConfig(
@@ -44,7 +51,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("JarvisCore")
 
-# --- КОНФИГУРАЦИЯ ---
+# --- КОНФИГУРАЦИЯ СИСТЕМЫ ---
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 GAME_URL = "https://kirito-fd.github.io/k1rit0/"
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
@@ -55,7 +62,7 @@ always_answer_mode = False
 last_owner_activity = 0.0
 last_auto_briefing_date = ""
 
-# AI Horde публичный бесплатный ключ
+# AI Horde бесплатный публичный ключ
 HORDE_API_KEY = os.getenv("HORDE_API_KEY", "0000000000").strip()
 
 # Голос Джарвиса
@@ -98,12 +105,11 @@ class LRUCacheDict(OrderedDict):
             self.popitem(last=False)
 
 
-# Кэш текстовых промптов и несжатых байтов для кнопки HD
 art_prompts_cache = LRUCacheDict(maxsize=300)
 art_bytes_cache = LRUCacheDict(maxsize=80)
 
 
-# --- РАНДОМАЙЗЕР ДЛЯ РЕЖИМА "УДИВИ МЕНЯ" ---
+# --- РАНДОМАЙЗЕР СЦЕНАРИЕВ ("УДИВИ МЕНЯ") ---
 APPEARANCE_POOL = [
     "stunning pale gothic girl with long raven black hair and emerald eyes",
     "gorgeous japanese model with sleek black hair and soft bedroom eyes",
@@ -130,7 +136,6 @@ def generate_random_surprise_prompt() -> Tuple[str, str]:
     appearance = random.choice(APPEARANCE_POOL)
     setting = random.choice(SETTING_POOL)
     pose, angle = random.choice(POSES_POOL)
-    
     clean_desc = f"{appearance}, {pose} в локации ({setting[:40]}...)"
     full_prompt = (
         f"{appearance}, {pose}, {angle}, completely unclothed, natural bare skin, "
@@ -398,6 +403,8 @@ async def process_jarvis_voice(text: str) -> Optional[Tuple[Path, bool]]:
 
 # --- УДАЛЕНИЕ ВОДЯНОГО ЗНАКА ---
 def strip_watermark(image_bytes: bytes) -> bytes:
+    if not HAS_PIL:
+        return image_bytes
     try:
         with Image.open(io.BytesIO(image_bytes)) as img:
             w, h = img.size
@@ -480,7 +487,7 @@ async def generate_infinite_nsfw(prompt: str, is_anime: bool = False) -> Optiona
         "deformed, bad anatomy, bad hands, blurry, watermark, signature, logo"
     )
 
-    # 1. Запрос в AI Horde с включенным GFPGAN (починка глаз/лиц)
+    # 1. Запрос в AI Horde с включенным GFPGAN (починка лиц)
     headers = {"apikey": HORDE_API_KEY, "Client-Agent": "JarvisAiBot:v2.5"}
     payload = {
         "prompt": f"{full_prompt} ### {negative_prompt}",
@@ -493,7 +500,7 @@ async def generate_infinite_nsfw(prompt: str, is_anime: bool = False) -> Optiona
             "karras": True,
             "nsfw": True,
             "censor_nsfw": False,
-            "post_processing": ["GFPGAN"]  # Авто-реставрация лиц!
+            "post_processing": ["GFPGAN"]
         },
         "nsfw": True,
         "censor_nsfw": False,
@@ -507,7 +514,7 @@ async def generate_infinite_nsfw(prompt: str, is_anime: bool = False) -> Optiona
                 task_id = data.get("id")
                 if task_id:
                     check_url = f"https://aihorde.net/api/v2/generate/check/{task_id}"
-                    for _ in range(12):  # Ждем до 24 сек
+                    for _ in range(12):
                         await asyncio.sleep(2)
                         async with http_session.get(check_url, headers=headers) as chk:
                             if chk.status == 200 and (await chk.json()).get("done"):
@@ -523,7 +530,7 @@ async def generate_infinite_nsfw(prompt: str, is_anime: bool = False) -> Optiona
     except Exception:
         pass
 
-    # 2. Резервный быстрый канал (Pollinations) с авто-обрезкой водяного знака
+    # 2. Резервный канал (Pollinations)
     encoded = urllib.parse.quote(full_prompt.strip())
     seed = random.randint(100, 9999999)
     res_w, res_h = (896, 896) if is_anime else (896, 640)
@@ -577,7 +584,6 @@ def build_daily_briefing() -> str:
         f"• <b>Режим 18+ (NSFW):</b> {'РАЗБЛОКИРОВАН' if nsfw_art_mode else 'Заблокирован'}"
     ]
 
-    # Визиты в Telegram Business
     if business_visits:
         lines.append(f"\n<b>Ночной журнал Telegram Business ({len(business_visits)} контактов):</b>")
         for cid, info in list(business_visits.items())[-5:]:
@@ -585,7 +591,6 @@ def build_daily_briefing() -> str:
     else:
         lines.append("\n• <b>Telegram Business:</b> Ночных обращений не зафиксировано, покой не нарушен.")
 
-    # Напоминания
     if reminders_list:
         lines.append(f"\n• <b>Активных задач в календаре:</b> {len(reminders_list)} шт.")
     else:
@@ -595,7 +600,7 @@ def build_daily_briefing() -> str:
     return "\n".join(lines)
 
 
-# --- ПРОМПТЫ ДЖАРВИСА ---
+# --- СИСТЕМНЫЕ ПРОМПТЫ ДЖАРВИСА ---
 STRICT_RULES = (
     "\nПРАВИЛА:\n"
     "1. ЯЗЫК: Исключительно русский.\n"
@@ -808,7 +813,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         await send_smart_response(chat_id, bus_id, f"Инициирую запуск мини-приложения:\n{GAME_URL}", is_direct=is_direct)
         return True
 
-    # Утренний брифинг (Фича 7)
+    # Брифинг
     if lower in ["брифинг", "джарвис брифинг", "!брифинг", "утренний отчет", "сводка"]:
         if not is_owner:
             return True
@@ -816,7 +821,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         await send_smart_response(chat_id, bus_id, briefing_text, is_direct=is_direct, send_as_voice=True)
         return True
 
-    # Режим "Удиви меня" (Фича 3)
+    # Режим "Удиви меня"
     if lower in ["удиви меня", "джарвис удиви меня", "!сюрприз", "рандом арт"]:
         if not nsfw_art_mode:
             await send_smart_response(chat_id, bus_id, "Протокол 18+ деактивирован. Включите командой <code>18+ вкл</code>, сэр.", is_direct=is_direct)
@@ -864,7 +869,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         await send_smart_response(chat_id, bus_id, "Фильтр безопасности 18+ активирован, сэр.", is_direct=is_direct)
         return True
 
-    # Стандартная генерация артов
+    # Генерация артов
     if re.search(r"\b(нарисуй|сгенерируй|создай арт|арт)\b", lower) or lower.startswith("!арт"):
         prompt = re.sub(r"\b(джарвис|пожалуйста|нарисуй|сгенерируй|создай арт|арт|!арт)\b", "", user_input, flags=re.I).strip(" ,:;!?")
         if not prompt:
@@ -1045,7 +1050,6 @@ async def handle_art_retry(callback: types.CallbackQuery):
         await callback.message.reply("Сервер перегружен. Повторите нажатие через пару секунд, сэр.")
 
 
-# Фича 2: Отправка оригинального несжатого HD файла
 @dp.callback_query(F.data.startswith("art_hd:"))
 async def handle_art_hd(callback: types.CallbackQuery):
     gen_id = callback.data.split(":")[1]
@@ -1064,7 +1068,6 @@ async def handle_art_hd(callback: types.CallbackQuery):
     )
 
 
-# Фича 3: Случайный арт по кнопке
 @dp.callback_query(F.data.startswith("art_surprise:"))
 async def handle_art_surprise_button(callback: types.CallbackQuery):
     current_style = callback.data.split(":")[1]
@@ -1218,7 +1221,7 @@ async def cleaner_and_reminders_task():
             now_dt = datetime.datetime.now()
             today_date = now_dt.strftime("%Y-%m-%d")
 
-            # Фича 7: Автоматический брифинг в 09:00 утра для хозяина
+            # Автоматический брифинг в 09:00 утра для хозяина
             if now_dt.hour == 9 and now_dt.minute == 0 and last_auto_briefing_date != today_date and OWNER_ID != 0:
                 last_auto_briefing_date = today_date
                 briefing_msg = build_daily_briefing()
