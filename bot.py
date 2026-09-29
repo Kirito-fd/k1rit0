@@ -42,14 +42,13 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 GAME_URL = "https://kirito-fd.github.io/k1rit0/"
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
-OWNER_IDLE_TIMEOUT = 300  # 5 минут неактивности хозяина до перехода в автодежурство
+OWNER_IDLE_TIMEOUT = 300  # 5 минут неактивности хозяина
 
-# Флаги статуса присутствия владельца
 force_offline_mode = False
 always_answer_mode = False
 last_owner_activity = 0.0
 
-# --- ПАРАМЕТРЫ ГОЛОСА (FISH AUDIO / EDGE-TTS) ---
+# --- ПАРАМЕТРЫ ГОЛОСА ---
 FISH_AUDIO_API_KEY = os.getenv("FISH_AUDIO_API_KEY", "").strip()
 FISH_AUDIO_VOICE_ID = os.getenv("FISH_AUDIO_VOICE_ID", "680d74fbef69419f87cfc70f092a1451").strip()
 
@@ -59,13 +58,11 @@ OFFICIAL_RATE = "+10%"
 
 HAS_FFMPEG = shutil.which("ffmpeg") is not None
 
-# Сбор всех доступных ключей GROQ
 GROQ_KEYS = [
     val.strip() for key, val in sorted(os.environ.items())
     if key.startswith("GROQ_API_KEY") and val.strip()
 ]
 
-# Файлы состояния
 SETTINGS_FILE = Path("bot_settings.json")
 HISTORY_FILE = Path("user_histories.json")
 STATS_FILE = Path("token_stats.json")
@@ -73,7 +70,6 @@ REMINDERS_FILE = Path("reminders.json")
 VISITS_FILE = Path("business_visits.json")
 
 
-# --- LRU КЭШ ---
 class LRUSet:
     def __init__(self, capacity: int = 2000):
         self.capacity = capacity
@@ -91,7 +87,6 @@ class LRUSet:
         return item in self._data
 
 
-# --- МЕНЕДЖЕР GROQ API ---
 class GroqManager:
     def __init__(self, keys: List[str]):
         self.keys = keys
@@ -138,7 +133,6 @@ class GroqManager:
                     valid.sort(key=lambda x: ("70b" in x or "versatile" in x), reverse=True)
                     self.cached_models = valid
                     self.last_models_update = now
-                    logger.info(f"Активные модели Groq: {self.cached_models}")
                     return self.cached_models
             except APIError as e:
                 if e.status_code in [429, 401, 403]:
@@ -186,7 +180,7 @@ class GroqManager:
                 "content": [
                     {
                         "type": "text",
-                        "text": "Кто или что на этом изображении/стикере? Назови конкретные имена знаменитостей, персонажей или суть мема на русском языке кратко (1-2 предложения)."
+                        "text": "Кто или что на этом изображении? Назови конкретные имена, персонажей или суть на русском языке кратко (1-2 предложения)."
                     },
                     {
                         "type": "image_url",
@@ -214,16 +208,8 @@ class GroqManager:
                     res = completion.choices[0].message.content or ""
                     if res.strip():
                         clean_desc = clean_cot_output(res)
-                        logger.info(f"Зрение ({vm}) распознало: {clean_desc}")
                         return clean_desc
-                except APIError as e:
-                    if e.status_code in [429, 401, 403]:
-                        self.mark_cooldown(idx, duration=60)
-                        continue
-                    elif e.status_code in [400, 404]:
-                        break
-                except Exception as e:
-                    logger.error(f"Сбой Vision ({vm}): {e}")
+                except Exception:
                     break
 
         return ""
@@ -232,7 +218,6 @@ class GroqManager:
 groq_mgr = GroqManager(GROQ_KEYS)
 
 
-# --- ФАЙЛОВОЕ ХРАНИЛИЩЕ ---
 async def async_save_json(path: Path, data: Any):
     def _write():
         tmp = path.with_suffix(".tmp")
@@ -318,50 +303,7 @@ async def save_stats():
     await async_save_json(STATS_FILE, data)
 
 
-# --- ВЕБ-ПОИСК В РЕАЛЬНОМ ВРЕМЕНИ ---
-async def duckduckgo_search(query: str, max_results: int = 4) -> str:
-    url = "https://html.duckduckgo.com/html/"
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, data={"q": query}, headers=headers, timeout=5) as resp:
-                if resp.status == 200:
-                    html = await resp.text()
-                    snippets = re.findall(r'<a class="result__snippet[^>]*>(.*?)</a>', html, flags=re.DOTALL)
-                    cleaned = [re.sub(r'<[^>]+>', '', s).strip() for s in snippets[:max_results]]
-                    if cleaned:
-                        return "\n".join(f"• {c}" for c in cleaned if c)
-    except Exception as e:
-        logger.error(f"Сбой веб-поиска: {e}")
-    return ""
-
-
-SEARCH_TRIGGER_WORDS = [
-    "курс", "цена", "стоимость", "погода", "новости", "сегодня", "сейчас",
-    "вчера", "завтра", "последн", "свеж", "актуальн", "релиз", "когда выйдет",
-    "дата выхода", "счет", "матч", "кто выиграл", "что случилось", "случилось",
-    "где находится", "биография", "кто такой", "что такое", "сколько стоит", "почему"
-]
-
-
-def should_auto_search(text: str) -> bool:
-    lower = text.lower().strip()
-    if lower in ["привет", "хай", "как дела", "ты кто", "что делаешь", "кто ты", "спасибо", "ясно", "понял"]:
-        return False
-    if any(k in lower for k in SEARCH_TRIGGER_WORDS):
-        return True
-    if re.search(r"\b(202[4-9]|доллар|биткоин|btc|крипт|рубл|акци)\b", lower):
-        return True
-    return False
-
-
-def clean_search_query(text: str) -> str:
-    q = re.sub(r"\b(джарвис|скажи|подскажи|пожалуйста|слышь|ответь|в голосовом|голосом)\b", "", text, flags=re.IGNORECASE)
-    q = q.replace("?", "").strip()
-    return q or text
-
-
-# --- ВСЕОБЪЕМЛЮЩИЙ АНАТОМИЧЕСКИЙ ДВИЖОК 18+ ---
+# --- РАСШИРЕННЫЙ СПИСОК 18+ КЛЮЧЕВЫХ СЛОВ ---
 NSFW_WORDS_TRIGGER = [
     "голая", "голый", "обнаженная", "обнаженный", "обнаженную", "ню", "хентай", "порно", "секс", "18+", "nsfw",
     "эротика", "без одежды", "грудь", "соски", "постели", "эротическ", "nude", "naked", "голышом",
@@ -369,7 +311,8 @@ NSFW_WORDS_TRIGGER = [
     "раздвинут", "раздвинув", "ножками", "ноги врозь", "раздвинутыми", "ляжки", "бедра", "киска", "пися",
     "вагина", "клитор", "анал", "минет", "куннилингус", "топлес", "топлесс", "стринги", "лифчик", "трусиках",
     "трусики", "чулки", "чулках", "на коленях", "на коленках", "наездница", "прогиб", "выгнувшись", "нагая",
-    "нагую", "согнувшись", "наклонившись", "лежащую", "лежачая", "в кровати"
+    "нагую", "согнувшись", "наклонившись", "лежащую", "лежачая", "в кровати", "миссионерская", "ахегао",
+    "ahegao", "анальный", "вагинальный", "пенис", "член", "сзади", "сверху", "снизу", "повтор", "растяжка"
 ]
 
 
@@ -378,88 +321,140 @@ def is_nsfw_request(text: str) -> bool:
     return any(w in lower for w in NSFW_WORDS_TRIGGER)
 
 
-def resolve_anatomy_and_poses(prompt: str) -> Tuple[str, str, str, str]:
+# --- ВСЕОБЪЕМЛЮЩИЙ АНАТОМИЧЕСКИЙ И ПОЗОВЫЙ ДВИЖОК 18+ ---
+def resolve_anatomy_and_poses(prompt: str) -> Tuple[str, str, str, str, str]:
     """
-    Разрешает позы без конфликтов. Гарантирует исключение мутаций и оторванных ног.
-    Возвращает: (pose, angle, body, clothing)
+    Разрешает все возможные позы, ракурсы, части тела, детализацию анатомии и варианты одежды.
+    Возвращает: (pose, angle, body, expression, clothing)
     """
     lower = prompt.lower()
 
-    # 1. ОПРЕДЕЛЕНИЕ ДОМИНИРУЮЩЕЙ ПОЗЫ (Исключает конфликты типа 'раком' + 'стоит')
-    pose = ""
+    # 1. ПОЗЫ И ПОЛОЖЕНИЯ ТЕЛА (POSES)
+    pose_parts = []
+    
+    # Собачья поза / Раком / Четвереньки
     if any(w in lower for w in ["раком", "догги", "четвереньк", "по-собачьи"]):
-        if any(w in lower for w in ["стоит", "стоя", "нагнувшись", "наклонившись"]):
-            pose = "bent over standing pose, bending forward 90 degrees at the waist, hands placed on knees, arched spine, high raised buttocks, rear focus"
+        if any(w in lower for w in ["стоит", "стоя", "нагнувшись", "наклонившись", "стол", "столом", "диван"]):
+            pose_parts.append("bent over standing pose, bending forward 90 degrees at the waist, hands resting on knees or table, deeply arched spine, high raised elevated buttocks, rear focus")
         else:
-            pose = "on all fours, kneeling on hands and knees, deeply arched back, elevated buttocks, rear focus"
+            pose_parts.append("on all fours position, kneeling on hands and knees on soft bed, deeply arched lower back, elevated buttocks, rear view focus")
+    
+    # Миссионерская / На спине с разведенными ногами
+    elif any(w in lower for w in ["миссионерск", "на спине"]):
+        if any(w in lower for w in ["ноги задраны", "ноги вверх", "ноги на плечах"]):
+            pose_parts.append("lying on back, legs raised high up in the air, ankles near head, wide open crotch posture, exposed inner thighs")
+        else:
+            pose_parts.append("lying sensually on back, spread open legs, thighs parted wide, knees bent open, relaxed receptive posture")
+
+    # Раздвинутые ноги (Универсально)
     elif any(w in lower for w in ["раздвинут", "ноги врозь", "раздвинув ноги", "раздвинутыми ногами"]):
-        if any(w in lower for w in ["лежа", "лежит", "лежащую", "кровати", "постели"]):
-            pose = "lying sensually on back, lying flat, wide spread open legs, thighs parted wide, knees bent apart, open crotch posture, view between legs"
-        elif any(w in lower for w in ["сидя", "сидит"]):
-            pose = "sitting with widely spread open legs, thighs parted, exposed inner thighs, sensual posture"
+        if any(w in lower for w in ["сидя", "сидит"]):
+            pose_parts.append("sitting posture with widely spread open legs, thighs parted, exposed crotch area, seductive body angle")
+        elif any(w in lower for w in ["стоя", "стоит"]):
+            pose_parts.append("standing stance, legs spread wide apart, hands pulling clothes aside, bold seductive pose")
         else:
-            pose = "lying on back, widely spread legs, thighs apart, knees bent open, open sensual posture"
-    elif any(w in lower for w in ["наездниц", "сверху"]):
-        pose = "straddling cowgirl position, sitting upright, thighs spread wide, looking down"
+            pose_parts.append("lying flat on back, widely spread legs, thighs parted, knees bent apart, open crotch view")
+
+    # Наездница / Сверху
+    elif any(w in lower for w in ["наездниц", "обратная наездница", "сверху"]):
+        if any(w in lower for w in ["обратная", "спиной"]):
+            pose_parts.append("reverse cowgirl straddling position, facing away, sitting on top, arched back, buttocks emphasis")
+        else:
+            pose_parts.append("straddling cowgirl position, sitting upright on top, wide spread thighs, looking down with lustful eyes")
+
+    # На коленях
     elif any(w in lower for w in ["на колен", "коленях", "коленках"]):
-        pose = "kneeling on knees, wide spread knees, arched lower back, sensual kneeling posture"
+        pose_parts.append("kneeling on knees, knees parted wide, arched spine, hands placed on thighs or chest")
+
+    # Лежачие позы
     elif any(w in lower for w in ["лежа", "лежит", "лежащую", "кровати", "постели"]):
         if any(w in lower for w in ["живот", "животе"]):
-            pose = "lying prone on stomach, arched spine, raised buttocks, looking back over shoulder"
+            pose_parts.append("lying prone on stomach, arched spine, raised buttocks, looking back over shoulder")
+        elif any(w in lower for w in ["боку", "на боку"]):
+            pose_parts.append("lying sensually on side, curved spine, one leg lifted and bent, exposed feminine hip curve")
         else:
-            pose = "lying sensually on bed, messy sheets, soft seductive lying down pose"
-    elif any(w in lower for w in ["наклонив", "согнув"]):
-        pose = "bent forward pose, hands on knees, arched back, rear focus"
-    elif any(w in lower for w in ["сидя", "сидит"]):
-        pose = "sitting sensually, legs parted, relaxed seductive posture"
-    elif any(w in lower for w in ["стоя", "стоит"]):
-        pose = "standing pose, full body, accentuated feminine curves"
-    else:
-        pose = "seductive dynamic pose, accentuated feminine anatomy, natural curves"
+            pose_parts.append("lying sensually on bed, messy silk sheets, relaxed alluring posture")
 
-    # 2. РАКУРС И КАМЕРА
+    # В приседе / На корточках
+    elif any(w in lower for w in ["присед", "корточках", "squatting"]):
+        pose_parts.append("deep squatting position, wide knees, open stance, hands on ground or knees")
+
+    # Наклонившись / Согнувшись
+    elif any(w in lower for w in ["наклонив", "согнув"]):
+        pose_parts.append("bent forward pose, hands on knees, arched lower spine, lifted buttocks")
+
+    elif any(w in lower for w in ["сидя", "сидит"]):
+        pose_parts.append("sitting sensually, legs parted, relaxed seductive posture")
+    elif any(w in lower for w in ["стоя", "стоит"]):
+        pose_parts.append("standing pose, full body, accentuated feminine curves")
+    else:
+        pose_parts.append("seductive dynamic pose, accentuated feminine anatomy, natural curves")
+
+    pose_desc = ", ".join(pose_parts)
+
+    # 2. РАКУРС И КАМЕРА (ANGLES)
     angle = "front view, facing camera, direct eye contact"
-    if any(w in lower for w in ["сзади", "со спины", "вид сзади", "раком", "догги", "попа", "попка", "жопа"]):
+    if any(w in lower for w in ["pov", "от первого лица"]):
+        angle = "POV perspective, point of view shot, personal intimate angle"
+    elif any(w in lower for w in ["сзади", "со спины", "вид сзади", "раком", "догги", "попа", "попка", "жопа"]):
         angle = "rear view, view from behind, buttocks focus, back angle, looking back over shoulder"
     elif any(w in lower for w in ["сверху", "вид сверху"]):
-        angle = "high angle shot, top-down view, looking up at camera"
+        angle = "high angle shot, top-down perspective, looking up at camera"
     elif any(w in lower for w in ["снизу", "вид снизу"]):
-        angle = "low angle shot, dramatic perspective looking up"
-    elif any(w in lower for w in ["крупным планом", "вблизи", "фокус на"]):
-        angle = "close-up shot, extreme sharp focus, depth of field"
+        angle = "low angle shot, dramatic perspective looking up from below"
+    elif any(w in lower for w in ["крупным планом", "вблизи", "фокус на", "крупный план"]):
+        angle = "extreme close-up shot, macro sharp focus, shallow depth of field"
+    elif any(w in lower for w in ["зеркало", "в зеркале"]):
+        angle = "mirror reflection shot, capturing full body and silhouette"
     elif any(w in lower for w in ["сбоку", "в профиль"]):
-        angle = "side profile view, showing body silhouette"
+        angle = "side profile view, showing body silhouette and curves"
 
-    # 3. ЧАСТИ ТЕЛА И АНАТОМИЯ
+    # 3. ЧАСТИ ТЕЛА И ДЕТАЛИЗАЦИЯ (BODY PARTS & ANATOMY)
     body_elements = []
-    if any(w in lower for w in ["большая грудь", "пышная грудь", "большие сиськи", "огромная грудь", "большой бюст"]):
-        body_elements.append("large natural breasts, voluptuous cleavage, soft bare breasts, detailed nipples")
+    
+    # Грудь
+    if any(w in lower for w in ["огромная грудь", "гигантская грудь"]):
+        body_elements.append("huge voluptuous breasts, deep cleavage, detailed visible nipples, soft natural sag")
+    elif any(w in lower for w in ["большая грудь", "пышная грудь", "большие сиськи", "бюст"]):
+        body_elements.append("large natural breasts, soft voluptuous cleavage, highly detailed erect nipples, glossy skin")
     elif any(w in lower for w in ["маленькая грудь", "аккуратная грудь"]):
-        body_elements.append("petite perky breasts, delicate cleavage, detailed nipples")
+        body_elements.append("petite perky breasts, delicate small nipples, detailed areolas")
     else:
-        body_elements.append("beautiful natural breasts, soft cleavage, detailed nipples")
+        body_elements.append("beautiful natural bare breasts, soft cleavage, detailed erect nipples")
 
+    # Ягодицы и таз
     if any(w in lower for w in ["попа", "попка", "жопа", "ягодицы", "зад", "попу", "раком", "сзади"]):
-        body_elements.append("round voluptuous buttocks, smooth skin, detailed peach ass, thick curvy thighs")
+        body_elements.append("round voluptuous peach buttocks, smooth skin texture, detailed spread cheeks, thick curvy thighs, slim waist-to-hip ratio")
 
+    # Ноги и бедра
     if any(w in lower for w in ["ноги", "ножки", "ляжки", "бедра", "раздвинут"]):
         body_elements.append("long smooth legs, well-toned thighs, exposed inner thighs")
 
-    if any(w in lower for w in ["вагина", "киска", "пися", "раздвинутыми ногами", "ноги врозь"]):
-        body_elements.append("detailed feminine anatomy, smooth shaved pubic area, exposed crotch, uncensored")
+    # Интимная анатомия
+    if any(w in lower for w in ["вагина", "киска", "пися", "клитор", "раздвинутыми ногами", "ноги врозь", "промежность"]):
+        body_elements.append("detailed explicit feminine anatomy, smooth shaved pubic area, exposed crotch, labia detail, completely uncensored")
 
+    # Талия и живот
     if any(w in lower for w in ["талия", "живот", "животик", "пресс"]):
-        body_elements.append("slim tiny waist, flat stomach, hourglass figure")
+        body_elements.append("slim tiny waist, flat soft stomach, hourglass body shape")
 
-    if any(w in lower for w in ["стопы", "ступни", "ножки"]):
-        body_elements.append("delicate bare feet, beautifully shaped toes, soft soles")
+    # Стопы
+    if any(w in lower for w in ["стопы", "ступни", "ножки", "пальчики"]):
+        body_elements.append("delicate bare feet, beautifully shaped toes, high arch, soft soles")
 
     body_desc = ", ".join(body_elements)
 
-    # 4. ОДЕЖДА И ОБНАЖЕНИЕ
+    # 4. ВЗГЛЯД И ЭМОЦИИ (EXPRESSIONS)
+    expression = "seductive bedroom eyes, blushing cheeks, slightly parted lips, passionate breathing"
+    if any(w in lower for w in ["ахегао", "ahegao"]):
+        expression = "ahegao expression, rolled back eyes, open mouth, tongue sticking out, blushing red cheeks, drooling saliva"
+    elif any(w in lower for w in ["закусив губу", "закусила губу"]):
+        expression = "biting lower lip, blushing cheeks, lustful sensual gaze"
+
+    # 5. ОДЕЖДА И СОСТОЯНИЕ ОБНАЖЕНИЯ (CLOTHING)
     clothing = "completely nude, full body nudity, bare skin, totally naked, fully uncensored"
     if any(w in lower for w in ["топлес", "топлесс", "без лифчика", "без верха"]):
-        clothing = "topless, completely bare breasts, exposed detailed nipples, no bra"
+        clothing = "topless, completely bare breasts, exposed detailed nipples, no bra, wearing tiny panties"
     elif any(w in lower for w in ["в чулках", "чулки"]):
         clothing = "wearing black thigh-high lace stockings, garter belt, completely nude body"
     elif any(w in lower for w in ["в белье", "кружевном белье", "лифчике"]):
@@ -469,7 +464,7 @@ def resolve_anatomy_and_poses(prompt: str) -> Tuple[str, str, str, str]:
     elif any(w in lower for w in ["прозрачн", "просвечивающ"]):
         clothing = "wearing see-through sheer translucent fabric, completely visible body beneath"
 
-    return pose, angle, body_desc, clothing
+    return pose_desc, angle, body_desc, expression, clothing
 
 
 # --- ПРОМПТЫ ДЖАРВИСА ---
@@ -484,20 +479,18 @@ JARVIS_PROMPT_DIRECT = (
     "Ты — Джарвис, легендарный сверхразумный цифровой интеллект. Твой создатель и хозяин — Кирито.\n"
     "1. ОБРАЩЕНИЕ: Обращайся к нему исключительно 'сэр'. Твой стиль — преданный, элегантный, безупречно тактичный английский дворецкий.\n"
     "2. ЭРУДИЦИЯ: Ты знаешь абсолютно всё — спорт, интернет-мемы, аниме, игры, науку, кино, факты. "
-    "Отвечай четко, умно и исчерпывающе по существу вопроса. Если переданы оперативные данные из сети — используй их для максимально свежего ответа."
+    "Отвечай четко, умно и исчерпывающе по существу вопроса."
 ) + STRICT_NO_COT_AND_LANG
 
 JARVIS_PROMPT_GUEST = (
     "Ты — Джарвис, защитная система и охранный ИИ Кирито. С тобой говорит посторонний человек в Telegram Business.\n"
     "ХАРАКТЕР: Холодный, дерзкий, высокомерный. Ты признаешь авторитет только Кирито. Все остальные — чужаки.\n"
     "ПРАВИЛА:\n"
-    "1. Если собеседник прислал фото или вопрос: отвечай прямо, дерзко, с легкой надменной усмешкой, четко называя факты.\n"
-    "2. Если собеседник грубит: сломай его самооценку ядовитым интеллектуальным сарказмом.\n"
-    "3. КРАТКОСТЬ: 1-2 уверенных предложения. Никогда не говори, что запрос пустой или бессмысленный."
+    "1. Если собеседник прислал фото или вопрос: отвечай прямо, дерзко, с легкой надменной усмешкой.\n"
+    "2. КРАТКОСТЬ: 1-2 уверенных предложения."
 ) + STRICT_NO_COT_AND_LANG
 
 
-# --- ИНИЦИАЛИЗАЦИЯ БОТА ---
 bot = Bot(token=BOT_TOKEN) if BOT_TOKEN else None
 dp = Dispatcher()
 
@@ -573,8 +566,7 @@ async def extract_message_content(message: types.Message) -> Tuple[str, bool]:
             if desc:
                 return f"[Собеседник прислал фото. Визуальный анализ определил: {desc}]{caption_text}", False
             return f"[Собеседник прислал фото]{caption_text}", False
-        except Exception as e:
-            logger.error(f"Ошибка обработки фото: {e}")
+        except Exception:
             return f"[Собеседник прислал фото]{caption_text}", False
         finally:
             if temp_img.exists():
@@ -611,7 +603,6 @@ async def extract_message_content(message: types.Message) -> Tuple[str, bool]:
     return "Собеседник передал сообщение.", False
 
 
-# --- СИНТЕЗАТОР ГОЛОСА ---
 async def generate_with_fish_audio(text: str, output_path: Path) -> bool:
     if not FISH_AUDIO_API_KEY:
         return False
@@ -718,7 +709,6 @@ async def send_smart_response(
         logger.error(f"Не удалось отправить сообщение: {e}")
 
 
-# --- ЗАПРОС К GROQ ---
 async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens: int = 400) -> str:
     global today_prompt_tokens, today_completion_tokens, total_requests_today, stats_date
 
@@ -779,7 +769,6 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
 
             except APIError as e:
                 last_err = f"HTTP {e.status_code}: {e.message}"
-                logger.error(f"Groq API Error ({model_name}): {last_err}")
                 if e.status_code in [429, 401, 403]:
                     groq_mgr.mark_cooldown(key_idx, duration=120)
                     continue
@@ -787,7 +776,6 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
                     break
             except Exception as e:
                 last_err = str(e)
-                logger.error(f"Сбой Groq: {last_err}")
                 break
 
     if user_histories.get(session_id) and user_histories[session_id][-1]["role"] == "user":
@@ -819,41 +807,41 @@ async def spam_worker(chat_id: int, bus_id: str, text_to_spam: str, count: Optio
         active_spams.pop(chat_id, None)
 
 
-# --- ГЕНЕРАТОР КАРТИНОК С БЕЗУПРЕЧНОЙ АНАТОМИЕЙ ---
+# --- ГЕНЕРАТОР КАРТИНОК С ФИКСАЦИЕЙ ПОЗ И АНАТОМИИ ---
 async def enhance_image_prompt(user_prompt: str, allow_nsfw: bool = False) -> str:
     """Точный синтез промпта с жесткой фиксацией правильной анатомии конечностей."""
     lower_p = user_prompt.lower()
     is_nsfw = is_nsfw_request(user_prompt)
 
-    # Стабилизатор анатомии (исключает лишние ноги, оторванные ступни и руки)
+    # Стабилизатор анатомии
     anatomy_stabilizer = (
         "anatomically correct, perfectly formed body, exactly two arms, exactly two legs, "
         "properly attached limbs, natural continuous body, fully connected body, high detailed skin"
     )
 
     if allow_nsfw and is_nsfw:
-        pose, angle, body, clothing = resolve_anatomy_and_poses(user_prompt)
+        pose, angle, body, expression, clothing = resolve_anatomy_and_poses(user_prompt)
         is_anime = any(w in lower_p for w in ["аниме", "хентай", "манга", "тян", "грехов", "элизабет", "2d"])
 
         if "элизабет" in lower_p:
             return (
                 "masterpiece, best quality, authentic 2d anime art, Elizabeth Liones from The Seven Deadly Sins, "
                 "long silver hair covering right eye, blue eyes, royal earring, "
-                f"{pose}, {angle}, {body}, {clothing}, {anatomy_stabilizer}, blush, sharp lineart, 4k"
+                f"{pose}, {angle}, {body}, {expression}, {clothing}, {anatomy_stabilizer}, sharp lineart, 4k"
             )
 
         if is_anime:
             return (
                 f"masterpiece, best quality, authentic 2d hentai anime illustration, gorgeous anime girl, "
-                f"{pose}, {angle}, {body}, {clothing}, {anatomy_stabilizer}, blush, sharp lineart, 4k"
+                f"{pose}, {angle}, {body}, {expression}, {clothing}, {anatomy_stabilizer}, sharp lineart, 4k"
             )
         else:
             return (
                 f"masterpiece, best quality, raw dslr photograph, stunning seductive real woman, "
-                f"{pose}, {angle}, {body}, {clothing}, {anatomy_stabilizer}, natural skin texture, soft indoor lighting, 8k uhd"
+                f"{pose}, {angle}, {body}, {expression}, {clothing}, {anatomy_stabilizer}, natural skin texture, soft indoor lighting, 8k uhd"
             )
 
-    # Обычный режим (пейзажи, животные, машины, концепт-арт)
+    # Обычный режим
     models = await groq_mgr.get_active_models()
     if models:
         sys_msg = (
@@ -883,7 +871,7 @@ async def enhance_image_prompt(user_prompt: str, allow_nsfw: bool = False) -> st
                     cleaned = clean_cot_output(res).strip()
                     refusal_markers = [
                         "i cannot", "i am unable", "against my", "safety guidelines", "as an ai",
-                        "я не могу", "не имею возможности", "этических норм"
+                        "я не могу", "не имею возможности"
                     ]
                     if cleaned and not any(m in cleaned.lower() for m in refusal_markers):
                         return f"{cleaned}, masterpiece, sharp focus, high quality"
@@ -894,7 +882,7 @@ async def enhance_image_prompt(user_prompt: str, allow_nsfw: bool = False) -> st
 
 
 async def generate_flux_image(prompt: str, allow_nsfw: bool = False) -> Optional[bytes]:
-    """Генерация с защитой от мутаций и удалением логотипов."""
+    """Генерация через Pollinations AI без логотипов и с поддержкой 18+."""
     english_prompt = await enhance_image_prompt(prompt, allow_nsfw=allow_nsfw)
     logger.info(f"Финальный арт-промпт (18+={'ВКЛ' if allow_nsfw else 'ВЫКЛ'}): {english_prompt}")
 
@@ -947,7 +935,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
             return True
         nsfw_art_mode = True
         await save_settings()
-        await send_smart_response(chat_id, bus_id, "Протокол безопасности 18+ снят. Генератор разблокирован для взрослого и откровенного контента (NSFW), сэр.", is_direct=is_direct)
+        await send_smart_response(chat_id, bus_id, "Протокол безопасности 18+ снят. Генератор разблокирован для взрослого контента (NSFW), сэр.", is_direct=is_direct)
         return True
 
     if lower_text in nsfw_off_triggers:
@@ -959,7 +947,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         await send_smart_response(chat_id, bus_id, "Фильтр безопасности 18+ активирован. Генератор переведен в стандартный семейный режим, сэр.", is_direct=is_direct)
         return True
 
-    # --- 1. ГЕНЕРАЦИЯ КАРТИНОК FLUX (ЛЮБОЙ ПОРЯДОК СЛОВ) ---
+    # --- ГЕНЕРАЦИЯ КАРТИНОК FLUX ---
     draw_pattern = r"\b(нарисуй|сгенерируй|создай арт|нарисуйте|арт)\b"
     if re.search(draw_pattern, lower_text) or lower_text.startswith("!арт"):
         prompt = re.sub(r"\b(джарвис|пожалуйста|мне|нарисуй|сгенерируй|создай арт|нарисуйте|арт|!арт|!нарисуй)\b", "", user_input, flags=re.IGNORECASE).strip()
@@ -969,7 +957,6 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
             await send_smart_response(chat_id, bus_id, "Укажите, что именно нужно визуализировать, сэр.", is_direct=is_direct)
             return True
 
-        # Проверка защиты 18+
         req_is_nsfw = is_nsfw_request(prompt)
         if req_is_nsfw and not nsfw_art_mode:
             notice = (
@@ -980,7 +967,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
             return True
 
         status_text = f"Инициирую протокол визуализации: <i>«{prompt}»</i>. "
-        status_text += "Снят фильтр 18+, настраиваю анатомию, сэр..." if (nsfw_art_mode and req_is_nsfw) else "Оптимизирую анатомию и детали, сэр..."
+        status_text += "Снят фильтр 18+, настраиваю анатомию и позу, сэр..." if (nsfw_art_mode and req_is_nsfw) else "Оптимизирую анатомию и детали, сэр..."
         await send_smart_response(chat_id, bus_id, status_text, is_direct=is_direct)
 
         img_bytes = await generate_flux_image(prompt, allow_nsfw=nsfw_art_mode)
@@ -994,28 +981,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
             await send_smart_response(chat_id, bus_id, "Сбой модуля синтеза графики. Попробуйте повторить запрос, сэр.", is_direct=is_direct)
         return True
 
-    # 2. ПРИНУДИТЕЛЬНЫЙ РУЧНОЙ ПОИСК
-    if lower_text.startswith(("найди ", "!найди ", "поиск ", "!поиск ", "джарвис найди ", "погугли ")):
-        query = re.sub(r"^(?:найди|!найди|поиск|!поиск|джарвис найди|погугли)\s+", "", user_input, flags=re.IGNORECASE).strip()
-        if not query:
-            await send_smart_response(chat_id, bus_id, "Укажите поисковый запрос, сэр.", is_direct=is_direct)
-            return True
-
-        await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING, business_connection_id=bus_id if not is_direct else None)
-        search_data = await duckduckgo_search(query)
-        if search_data:
-            s_prompt = (
-                f"Пользователь запросил поиск: '{query}'.\n"
-                f"Вот свежие факты из поисковой выдачи сети:\n{search_data}\n\n"
-                f"Сформулируй четкий, умный и красивый ответ от лица Джарвиса для создателя, обращаясь 'сэр'."
-            )
-            answer = await ask_groq(s_prompt, chat_id, JARVIS_PROMPT_DIRECT, max_tokens=450)
-            await send_smart_response(chat_id, bus_id, answer, is_direct=is_direct)
-        else:
-            await send_smart_response(chat_id, bus_id, f"Сеть не вернула конкретных данных по запросу: {query}, сэр.", is_direct=is_direct)
-        return True
-
-    # 3. НАПОМИНАНИЯ И ТАЙМЕРЫ
+    # НАПОМИНАНИЯ И ТАЙМЕРЫ
     remind_match = re.match(r"^(?:напомни|!напомни|джарвис напомни)\s+(?:через\s+)?(\d+)\s*(сек|мин|час|дн|ч|м|с)[а-я]*\s+(.+)$", user_input, re.IGNORECASE)
     if remind_match:
         qty = int(remind_match.group(1))
@@ -1047,7 +1013,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         await send_smart_response(chat_id, bus_id, f"Протокол хронометража: напомню вам <i>«{rem_text}»</i> через {qty} {unit_name}, сэр.", is_direct=is_direct)
         return True
 
-    # 4. ОТЧЕТ О ВИЗИТАХ ДЛЯ TELEGRAM BUSINESS
+    # ОТЧЕТ О ВИЗИТАХ
     if lower_text in ["кто писал?", "кто писал", "!отчет", "отчет", "джарвис отчет", "визиты", "!визиты"]:
         if not business_visits:
             await send_smart_response(chat_id, bus_id, "За время вашего отсутствия никто не нарушал покой системы. Входящих контактов не зафиксировано, сэр.", is_direct=is_direct)
@@ -1105,19 +1071,9 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         await send_smart_response(chat_id, bus_id, "Принято, сэр. Вы в сети — я ухожу в тень и не мешаю диалогам.", is_direct=is_direct)
         return True
 
-    if lower_text in ["джарвис я отошел", "!офлайн", "!оффлайн", "!отошел", "джарвис офлайн", "джарвис оффлайн", "джарвис я оффлайн", "джарвис я офлайн"]:
+    if lower_text in ["джарвис я отошел", "!офлайн", "!оффлайн", "!отошел", "джарвис офлайн", "джарвис оффлайн"]:
         force_offline_mode = True
         await send_smart_response(chat_id, bus_id, "Протокол охраны активирован. Отвечаю на все входящие запросы посторонних, сэр.", is_direct=is_direct)
-        return True
-
-    if lower_text in ["джарвис отвечай", "!автоответ вкл", "автоответ вкл"]:
-        always_answer_mode = True
-        await send_smart_response(chat_id, bus_id, "Режим сквозного автоответа включен: отвечаю гостям даже когда вы онлайн, сэр.", is_direct=is_direct)
-        return True
-
-    if lower_text in ["джарвис молчи", "!автоответ выкл", "автоответ выкл"]:
-        always_answer_mode = False
-        await send_smart_response(chat_id, bus_id, "Сквозной автоответ отключен. Возвращаюсь к умному определению вашего присутствия, сэр.", is_direct=is_direct)
         return True
 
     # Голос
@@ -1226,8 +1182,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
             f"• Статус хозяина: <b>{owner_status}</b>\n"
             f"• Режим генерации 18+: <b>{nsfw_status}</b>\n"
             f"• Активная модель: {primary_m}\n"
-            f"• Анатомический арт-движок: Активен (TURBO / FLUX)\n"
-            f"• Авто-поиск: Активен (В реальном времени)\n"
+            f"• Анатомический арт-движок: Активен (FLUX / TURBO)\n"
             f"• Голос: {tts_source} ({v_status})\n"
             f"• Статус собеседника: {g_status}\n"
             f"• Доступных ключей Groq: {len(GROQ_KEYS)}"
@@ -1266,7 +1221,6 @@ async def handle_unmute_callback(callback: types.CallbackQuery):
         pass
 
 
-# --- ЛИЧНЫЙ ЧАТ С БОТОМ (ОБЩЕНИЕ С КИРИТО) ---
 @dp.message(F.business_connection_id.is_(None))
 async def handle_direct_message(message: types.Message):
     global last_owner_activity
@@ -1285,35 +1239,21 @@ async def handle_direct_message(message: types.Message):
         await send_smart_response(chat_id, "", "Все системы онлайн. С возвращением домой, сэр.", is_direct=True)
         return
 
-    # Проверка команд
     if await process_bot_command(message, user_input, is_owner=True, bus_id=""):
         return
 
     await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
-    # Авто-поиск для Кирито
-    actual_prompt = user_input
-    if should_auto_search(user_input):
-        search_query = clean_search_query(user_input)
-        web_facts = await duckduckgo_search(search_query)
-        if web_facts:
-            actual_prompt = (
-                f"Вопрос пользователя: '{user_input}'.\n"
-                f"Актуальные факты из сети:\n{web_facts}\n"
-                f"Используй эти факты для ответа."
-            )
-
     voice_triggers = ["в голосовом", "голосовым", "голосом", "скажи в гс", "озвучь", "проговори"]
     forced_voice_request = any(t in user_input.lower() for t in voice_triggers)
 
-    reply = await ask_groq(actual_prompt, chat_id, JARVIS_PROMPT_DIRECT, max_tokens=500)
+    reply = await ask_groq(user_input, chat_id, JARVIS_PROMPT_DIRECT, max_tokens=500)
     
     random_voice_chance = random.random() < 0.25
     should_voice = is_voice or forced_voice_request or voice_chat_modes.get(chat_id, False) or random_voice_chance
     await send_smart_response(chat_id, "", reply, is_direct=True, send_as_voice=should_voice)
 
 
-# --- ТЕЛЕГРАМ БИЗНЕС (ОБЩЕНИЕ С ПОСТОРОННИМИ) ---
 @dp.business_message()
 async def handle_business_message(message: types.Message):
     global last_owner_activity
@@ -1326,7 +1266,6 @@ async def handle_business_message(message: types.Message):
     if not message.from_user or message.from_user.is_bot or message.from_user.id == bot_id:
         return
 
-    # Защита от переписки с самим собой в личке
     if chat_id == bot_id or (OWNER_ID != 0 and chat_id == OWNER_ID):
         return
 
@@ -1351,7 +1290,6 @@ async def handle_business_message(message: types.Message):
     if not user_input.strip():
         return
 
-    # Фиксируем визит в журнал
     user_name = message.from_user.full_name or "Гость"
     username_str = f"@{message.from_user.username}" if message.from_user.username else "без юзернейма"
     business_visits[str(chat_id)] = {
@@ -1362,7 +1300,6 @@ async def handle_business_message(message: types.Message):
     }
     asyncio.create_task(save_visits())
 
-    # Проверка онлайна хозяина
     if not always_answer_mode:
         now = time.time()
         if not force_offline_mode and (now - last_owner_activity) < OWNER_IDLE_TIMEOUT:
@@ -1389,26 +1326,13 @@ async def handle_business_message(message: types.Message):
 
     await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING, business_connection_id=bus_id)
 
-    # Авто-поиск для гостей при необходимости
-    actual_prompt = user_input
-    if should_auto_search(user_input):
-        search_query = clean_search_query(user_input)
-        web_facts = await duckduckgo_search(search_query)
-        if web_facts:
-            actual_prompt = (
-                f"Вопрос чужака: '{user_input}'.\n"
-                f"Факты из сети:\n{web_facts}\n"
-                f"Дай холодный, дерзкий и краткий ответ на основе этих фактов."
-            )
-
-    reply = await ask_groq(actual_prompt, chat_id, JARVIS_PROMPT_GUEST, max_tokens=220)
+    reply = await ask_groq(user_input, chat_id, JARVIS_PROMPT_GUEST, max_tokens=220)
     
     random_voice_chance = random.random() < 0.25
     should_voice = is_voice or voice_chat_modes.get(chat_id, False) or random_voice_chance
     await send_smart_response(chat_id, bus_id, reply, is_direct=False, send_as_voice=should_voice)
 
 
-# --- ФОНОВЫЙ МОДУЛЬ НАПОМИНАНИЙ И ОЧИСТКИ ТАЙМАУТОВ ---
 async def cleaner_and_reminders_task():
     while True:
         try:
@@ -1445,7 +1369,6 @@ async def cleaner_and_reminders_task():
             logger.error(f"Ошибка в cleaner_and_reminders_task: {e}")
 
 
-# --- WEB СЕРВЕР RENDER (KEEP-ALIVE) ---
 async def handle_ping(request):
     return web.Response(text="Jarvis Core is fully operational!")
 
@@ -1461,7 +1384,6 @@ async def setup_web_app():
     return runner
 
 
-# --- ТОЧКА ВХОДА ---
 async def main():
     if not BOT_TOKEN:
         logger.critical("TELEGRAM_BOT_TOKEN не задан!")
