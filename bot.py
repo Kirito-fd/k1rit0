@@ -318,7 +318,7 @@ async def save_stats():
     await async_save_json(STATS_FILE, data)
 
 
-# --- ВЕБ-ПОИСК В РЕАЛЬНОМ ВРЕМЕНИ (DUCKDUCKGO) ---
+# --- ВЕБ-ПОИСК В РЕАЛЬНОМ ВРЕМЕНИ ---
 async def duckduckgo_search(query: str, max_results: int = 4) -> str:
     url = "https://html.duckduckgo.com/html/"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -362,8 +362,8 @@ def clean_search_query(text: str) -> str:
 
 
 NSFW_WORDS_TRIGGER = [
-    "голая", "голый", "обнаженная", "ню", "хентай", "порно", "секс", "18+", "nsfw",
-    "эротика", "без одежды", "грудь", "соски", "постели", "эротическ", "nude", "naked"
+    "голая", "голый", "обнаженная", "обнаженный", "ню", "хентай", "порно", "секс", "18+", "nsfw",
+    "эротика", "без одежды", "грудь", "соски", "постели", "эротическ", "nude", "naked", "голышом"
 ]
 
 
@@ -719,9 +719,9 @@ async def spam_worker(chat_id: int, bus_id: str, text_to_spam: str, count: Optio
         active_spams.pop(chat_id, None)
 
 
-# --- ГЕНЕРАТОР КАРТИНОК С ПОДДЕРЖКОЙ 18+ (NSFW) ---
+# --- ГЕНЕРАТОР КАРТИНОК С АВТО-ПЕРЕВОДОМ И ОБХОДОМ БЛОКИРОВОК ---
 async def enhance_image_prompt(user_prompt: str, allow_nsfw: bool = False) -> str:
-    """Джарвис оптимизирует промпт на английский язык через активные модели Groq."""
+    """Переводит и оптимизирует русский запрос в профессиональный английский FLUX-промпт."""
     models = await groq_mgr.get_active_models()
     if not models:
         return user_prompt
@@ -761,17 +761,27 @@ async def enhance_image_prompt(user_prompt: str, allow_nsfw: bool = False) -> st
                 )
                 res = completion.choices[0].message.content or ""
                 cleaned = clean_cot_output(res).strip()
-                refusal_markers = ["i cannot", "i am unable", "against my", "safety guidelines", "as an ai"]
+
+                # Проверка на отказ модели на русском и английском
+                refusal_markers = [
+                    "i cannot", "i am unable", "against my", "safety guidelines", "as an ai",
+                    "я не могу", "не имею возможности", "этических норм", "сексуальный контент",
+                    "порнографическ", "не допускается", "не разрешено"
+                ]
                 if cleaned and not any(m in cleaned.lower() for m in refusal_markers):
                     return cleaned
             except Exception:
                 continue
 
+    # Если модель отказалась переводить из-за 18+ — Джарвис подставляет готовый художественный промпт
+    if allow_nsfw and is_nsfw_request(user_prompt):
+        return "masterpiece, artistic nude, beautiful woman, flawless bare skin, boudoir, seductive pose, detailed face, cinematic lighting, 4k"
+
     return user_prompt
 
 
 async def generate_flux_image(prompt: str, allow_nsfw: bool = False) -> Optional[bytes]:
-    """Генерация через FLUX с выбором специализированной модели."""
+    """Генерация через FLUX с выбором специализированной модели и расширенным таймаутом."""
     english_prompt = await enhance_image_prompt(prompt, allow_nsfw=allow_nsfw)
     logger.info(f"Финальный арт-промпт FLUX (18+={'ВКЛ' if allow_nsfw else 'ВЫКЛ'}): {english_prompt}")
 
@@ -822,13 +832,18 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         await send_smart_response(chat_id, bus_id, "Фильтр безопасности 18+ активирован. Генератор переведен в стандартный семейный режим, сэр.", is_direct=is_direct)
         return True
 
-    # --- 1. ГЕНЕРАЦИЯ КАРТИНОК FLUX С ЗАЩИТОЙ ---
-    if lower_text.startswith(("нарисуй ", "!нарисуй ", "джарвис нарисуй ", "сгенерируй ", "!арт ")):
-        prompt = re.sub(r"^(?:нарисуй|!нарисуй|джарвис нарисуй|сгенерируй|!арт)\s+", "", user_input, flags=re.IGNORECASE).strip()
+    # --- 1. ГЕНЕРАЦИЯ КАРТИНОК FLUX (РАБОТАЕТ ПРИ ЛЮБОМ ПОРЯДКЕ СЛОВ) ---
+    draw_pattern = r"\b(нарисуй|сгенерируй|создай арт|нарисуйте|арт)\b"
+    if re.search(draw_pattern, lower_text) or lower_text.startswith("!арт"):
+        # Очищаем фразу от команды и лишних слов, вытаскивая суть запроса
+        prompt = re.sub(r"\b(джарвис|пожалуйста|мне|нарисуй|сгенерируй|создай арт|нарисуйте|арт|!арт|!нарисуй)\b", "", user_input, flags=re.IGNORECASE).strip()
+        prompt = re.sub(r"^[\s,.:;!?-]+|[\s,.:;!?-]+$", "", prompt).strip()
+
         if not prompt:
             await send_smart_response(chat_id, bus_id, "Укажите, что именно нужно визуализировать, сэр.", is_direct=is_direct)
             return True
 
+        # Проверка защиты 18+
         if is_nsfw_request(prompt) and not nsfw_art_mode:
             notice = (
                 "Протокол безопасности: создание взрослого контента 18+ заблокировано.\n"
@@ -1142,12 +1157,13 @@ async def handle_direct_message(message: types.Message):
         await send_smart_response(chat_id, "", "Все системы онлайн. С возвращением домой, сэр.", is_direct=True)
         return
 
+    # Проверка команд (включая гибкий поиск команды рисования)
     if await process_bot_command(message, user_input, is_owner=True, bus_id=""):
         return
 
     await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
-    # Авто-поиск для Кирито
+    # Авто-поиск свежих фактов
     actual_prompt = user_input
     if should_auto_search(user_input):
         search_query = clean_search_query(user_input)
@@ -1182,7 +1198,6 @@ async def handle_business_message(message: types.Message):
     if not message.from_user or message.from_user.is_bot or message.from_user.id == bot_id:
         return
 
-    # Защита от переписки с самим собой в личке
     if chat_id == bot_id or (OWNER_ID != 0 and chat_id == OWNER_ID):
         return
 
@@ -1245,7 +1260,6 @@ async def handle_business_message(message: types.Message):
 
     await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING, business_connection_id=bus_id)
 
-    # Авто-поиск для гостей при необходимости
     actual_prompt = user_input
     if should_auto_search(user_input):
         search_query = clean_search_query(user_input)
