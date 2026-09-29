@@ -2,3 +2,4 @@ aiogram>=3.0.0
 groq
 aiohttp
 edge-tts
+Pillow
