@@ -9,6 +9,7 @@ import re
 import shutil
 import tempfile
 import time
+import urllib.parse
 import uuid
 from collections import OrderedDict
 from pathlib import Path
@@ -26,7 +27,7 @@ from aiogram.exceptions import (
     TelegramRetryAfter,
 )
 from aiogram.methods import DeleteBusinessMessages
-from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import BufferedInputFile, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 from groq import APIError, AsyncGroq
 
 # --- ЛОГИРОВАНИЕ ---
@@ -41,14 +42,14 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 GAME_URL = "https://kirito-fd.github.io/k1rit0/"
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
-OWNER_IDLE_TIMEOUT = 300  # 5 минут неактивности до автоответа
+OWNER_IDLE_TIMEOUT = 300  # 5 минут неактивности хозяина до автоответа
 
 # Флаги статуса присутствия владельца
 force_offline_mode = False
 always_answer_mode = False
 last_owner_activity = 0.0
 
-# --- ПАРАМЕТРЫ ГОЛОСА ---
+# --- ПАРАМЕТРЫ ГОЛОСА (FISH AUDIO / EDGE-TTS) ---
 FISH_AUDIO_API_KEY = os.getenv("FISH_AUDIO_API_KEY", "").strip()
 FISH_AUDIO_VOICE_ID = os.getenv("FISH_AUDIO_VOICE_ID", "680d74fbef69419f87cfc70f092a1451").strip()
 
@@ -58,15 +59,18 @@ OFFICIAL_RATE = "+10%"
 
 HAS_FFMPEG = shutil.which("ffmpeg") is not None
 
-# Сбор всех ключей GROQ
+# Сбор всех доступных ключей GROQ
 GROQ_KEYS = [
     val.strip() for key, val in sorted(os.environ.items())
     if key.startswith("GROQ_API_KEY") and val.strip()
 ]
 
+# Файлы состояния
 SETTINGS_FILE = Path("bot_settings.json")
 HISTORY_FILE = Path("user_histories.json")
 STATS_FILE = Path("token_stats.json")
+REMINDERS_FILE = Path("reminders.json")
+VISITS_FILE = Path("business_visits.json")
 
 
 # --- LRU КЭШ ---
@@ -126,13 +130,11 @@ class GroqManager:
             client, idx = client_data
             try:
                 models_data = await client.models.list()
-                # Исключаем служебные и длиннодумающие модели (r1, deepseek, qwq), оставляем чистые быстрые
                 valid = [
                     m.id for m in models_data.data
                     if not any(x in m.id.lower() for x in ["whisper", "guard", "tool", "vision", "embed", "r1", "deepseek", "qwq"])
                 ]
                 if valid:
-                    # Приоритет проверенным быстрым моделям
                     valid.sort(key=lambda x: ("70b" in x or "versatile" in x), reverse=True)
                     self.cached_models = valid
                     self.last_models_update = now
@@ -175,7 +177,6 @@ class GroqManager:
         return "Приветствую, сэр."
 
     async def describe_image(self, image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
-        """Распознавание лиц, мемов, людей и персонажей через Groq Vision."""
         b64 = base64.b64encode(image_bytes).decode("utf-8")
         data_url = f"data:{mime_type};base64,{b64}"
 
@@ -264,6 +265,8 @@ def load_settings():
 
 
 muted_chats, blocked_guests, voice_chat_modes = load_settings()
+reminders_list: List[Dict[str, Any]] = sync_load_json(REMINDERS_FILE, [])
+business_visits: Dict[str, Dict[str, Any]] = sync_load_json(VISITS_FILE, {})
 
 
 async def save_settings():
@@ -273,6 +276,14 @@ async def save_settings():
         "voice_chat_modes": voice_chat_modes
     }
     await async_save_json(SETTINGS_FILE, data)
+
+
+async def save_reminders():
+    await async_save_json(REMINDERS_FILE, reminders_list)
+
+
+async def save_visits():
+    await async_save_json(VISITS_FILE, business_visits)
 
 
 user_histories: Dict[int, List[Dict[str, str]]] = {
@@ -305,6 +316,25 @@ async def save_stats():
     await async_save_json(STATS_FILE, data)
 
 
+# --- ВЕБ-ПОИСК (DUCKDUCKGO REAL-TIME) ---
+async def duckduckgo_search(query: str, max_results: int = 4) -> str:
+    """Быстрый поиск информации в реальном времени."""
+    url = "https://html.duckduckgo.com/html/"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, data={"q": query}, headers=headers, timeout=8) as resp:
+                if resp.status == 200:
+                    html = await resp.text()
+                    snippets = re.findall(r'<a class="result__snippet[^>]*>(.*?)</a>', html, flags=re.DOTALL)
+                    cleaned = [re.sub(r'<[^>]+>', '', s).strip() for s in snippets[:max_results]]
+                    if cleaned:
+                        return "\n".join(f"• {c}" for c in cleaned if c)
+    except Exception as e:
+        logger.error(f"Ошибка веб-поиска: {e}")
+    return ""
+
+
 # --- ПРОМПТЫ ДЖАРВИСА ---
 STRICT_NO_COT_AND_LANG = (
     "\nГЛАВНЫЕ ПРАВИЛА:\n"
@@ -316,7 +346,7 @@ STRICT_NO_COT_AND_LANG = (
 JARVIS_PROMPT_DIRECT = (
     "Ты — Джарвис, легендарный сверхразумный цифровой интеллект. Твой создатель и хозяин — Кирито.\n"
     "1. ОБРАЩЕНИЕ: Обращайся к нему исключительно 'сэр'. Твой стиль — преданный, элегантный, безупречно тактичный английский дворецкий.\n"
-    "2. ЭРУДИЦИЯ: Ты знаешь абсолютно всё — спорт, знаменитостей (например, Криштиану Роналду), интернет-мемы, аниме, игры, науку, кино. "
+    "2. ЭРУДИЦИЯ: Ты знаешь абсолютно всё — спорт, интернет-мемы, аниме, игры, науку, кино, факты. "
     "Отвечай четко, умно и исчерпывающе по существу вопроса."
 ) + STRICT_NO_COT_AND_LANG
 
@@ -324,7 +354,7 @@ JARVIS_PROMPT_GUEST = (
     "Ты — Джарвис, защитная система и охранный ИИ Кирито. С тобой говорит посторонний человек в Telegram Business.\n"
     "ХАРАКТЕР: Холодный, дерзкий, высокомерный. Ты признаешь авторитет только Кирито. Все остальные — чужаки.\n"
     "ПРАВИЛА:\n"
-    "1. Если собеседник прислал фото или вопрос (например, 'Кто это?'): отвечай прямо, дерзко, с легкой надменной усмешкой, четко называя, кто на фото (например: 'Перед вами Криштиану Роналду в мундире, если ваше зрение вам отказывает').\n"
+    "1. Если собеседник прислал фото или вопрос: отвечай прямо, дерзко, с легкой надменной усмешкой, четко называя, кто на фото.\n"
     "2. Если собеседник грубит: сломай его самооценку ядовитым интеллектуальным сарказмом.\n"
     "3. КРАТКОСТЬ: 1-2 уверенных предложения. Никогда не говори, что запрос пустой или бессмысленный."
 ) + STRICT_NO_COT_AND_LANG
@@ -342,14 +372,12 @@ recent_sent_messages: Dict[Tuple[int, str], float] = {}
 
 
 def clean_cot_output(text: str) -> str:
-    """Удаляет теги рассуждений <think>, не давая ответу стать пустым."""
     cleaned = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE)
     cleaned = re.sub(r"<think>[\s\S]*$", "", cleaned, flags=re.IGNORECASE)
     for m in ["**Итоговый ответ**", "Итоговый ответ:"]:
         if m in cleaned:
             cleaned = cleaned.split(m)[-1]
     cleaned = cleaned.strip()
-    # Если вдруг фильтр вычистил всё — возвращаем исходный текст без тегов
     if not cleaned and text.strip():
         cleaned = re.sub(r"</?think>", "", text, flags=re.IGNORECASE).strip()
     return cleaned
@@ -553,8 +581,8 @@ async def send_smart_response(
         logger.error(f"Не удалось отправить сообщение: {e}")
 
 
-# --- ЗАПРОС К GROQ С ДОСТАТОЧНЫМ ЛИМИТОМ ТОКЕНОВ ---
-async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens: int = 300) -> str:
+# --- ЗАПРОС К GROQ ---
+async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens: int = 400) -> str:
     global today_prompt_tokens, today_completion_tokens, total_requests_today, stats_date
 
     now_date = datetime.date.today().isoformat()
@@ -654,6 +682,21 @@ async def spam_worker(chat_id: int, bus_id: str, text_to_spam: str, count: Optio
         active_spams.pop(chat_id, None)
 
 
+# --- ГЕНЕРАТОР КАРТИНОК (FLUX) ---
+async def generate_flux_image(prompt: str) -> Optional[bytes]:
+    """Генерация арта через FLUX нейросеть."""
+    encoded = urllib.parse.quote(prompt.strip())
+    url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&model=flux&nologo=true"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=35) as resp:
+                if resp.status == 200:
+                    return await resp.read()
+    except Exception as e:
+        logger.error(f"Сбой генерации изображения: {e}")
+    return None
+
+
 async def process_bot_command(message: types.Message, user_input: str, is_owner: bool, bus_id: str = "") -> bool:
     global force_offline_mode, always_answer_mode, last_owner_activity
 
@@ -662,6 +705,101 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
     is_direct = not bool(bus_id)
 
     public_commands = ["игра", "тапалка", "!игра", "!тапалка", "/game", "!джарвис игра"]
+
+    # --- 1. ГЕНЕРАЦИЯ КАРТИНОК FLUX (НАРИСУЙ) ---
+    if lower_text.startswith(("нарисуй ", "!нарисуй ", "джарвис нарисуй ", "сгенерируй ", "!арт ")):
+        prompt = re.sub(r"^(?:нарисуй|!нарисуй|джарвис нарисуй|сгенерируй|!арт)\s+", "", user_input, flags=re.IGNORECASE).strip()
+        if not prompt:
+            await send_smart_response(chat_id, bus_id, "Укажите, что именно нужно визуализировать, сэр.", is_direct=is_direct)
+            return True
+
+        await send_smart_response(chat_id, bus_id, f"Инициирую протокол визуализации через FLUX: <i>«{prompt}»</i>. Ожидайте генерацию, сэр...", is_direct=is_direct)
+        img_bytes = await generate_flux_image(prompt)
+        if img_bytes:
+            photo_file = BufferedInputFile(img_bytes, filename="jarvis_art.jpg")
+            kwargs = {"chat_id": chat_id, "photo": photo_file, "caption": f"Протокол визуализации завершен, сэр.\nЗапрос: {prompt}"}
+            if bus_id:
+                kwargs["business_connection_id"] = bus_id
+            await bot.send_photo(**kwargs)
+        else:
+            await send_smart_response(chat_id, bus_id, "Сбой модуля синтеза графики. Попробуйте сформулировать запрос иначе, сэр.", is_direct=is_direct)
+        return True
+
+    # --- 2. ПОИСК В СЕТИ В РЕАЛЬНОМ ВРЕМЕНИ (НАЙДИ / ПОГУГЛИ) ---
+    if lower_text.startswith(("найди ", "!найди ", "поиск ", "!поиск ", "джарвис найди ", "погугли ")):
+        query = re.sub(r"^(?:найди|!найди|поиск|!поиск|джарвис найди|погугли)\s+", "", user_input, flags=re.IGNORECASE).strip()
+        if not query:
+            await send_smart_response(chat_id, bus_id, "Укажите поисковый запрос, сэр.", is_direct=is_direct)
+            return True
+
+        await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING, business_connection_id=bus_id if not is_direct else None)
+        search_data = await duckduckgo_search(query)
+        if search_data:
+            s_prompt = (
+                f"Пользователь запросил поиск: '{query}'.\n"
+                f"Вот свежие факты из поисковой выдачи сети:\n{search_data}\n\n"
+                f"Сформулируй четкий, умный и красивый ответ от лица Джарвиса для создателя, обращаясь 'сэр'."
+            )
+            answer = await ask_groq(s_prompt, chat_id, JARVIS_PROMPT_DIRECT, max_tokens=450)
+            await send_smart_response(chat_id, bus_id, answer, is_direct=is_direct)
+        else:
+            await send_smart_response(chat_id, bus_id, f"Сеть не вернула конкретных данных по запросу: {query}, сэр.", is_direct=is_direct)
+        return True
+
+    # --- 3. НАПОМИНАНИЯ И ТАЙМЕРЫ ---
+    remind_match = re.match(r"^(?:напомни|!напомни|джарвис напомни)\s+(?:через\s+)?(\d+)\s*(сек|мин|час|дн|ч|м|с)[а-я]*\s+(.+)$", user_input, re.IGNORECASE)
+    if remind_match:
+        qty = int(remind_match.group(1))
+        unit = remind_match.group(2).lower()
+        rem_text = remind_match.group(3).strip()
+
+        multiplier = 60
+        unit_name = "минут"
+        if unit in ["сек", "с"]:
+            multiplier = 1
+            unit_name = "секунд"
+        elif unit in ["час", "ч"]:
+            multiplier = 3600
+            unit_name = "часов"
+        elif unit in ["дн"]:
+            multiplier = 86400
+            unit_name = "дней"
+
+        delay_sec = qty * multiplier
+        trigger_ts = time.time() + delay_sec
+
+        reminders_list.append({
+            "chat_id": chat_id,
+            "bus_id": bus_id,
+            "text": rem_text,
+            "time": trigger_ts
+        })
+        await save_reminders()
+        await send_smart_response(chat_id, bus_id, f"Протокол хронометража: напомню вам <i>«{rem_text}»</i> через {qty} {unit_name}, сэр.", is_direct=is_direct)
+        return True
+
+    # --- 4. ОТЧЕТ О ВИЗИТАХ ДЛЯ TELEGRAM BUSINESS ---
+    if lower_text in ["кто писал?", "кто писал", "!отчет", "отчет", "джарвис отчет", "визиты", "!визиты"]:
+        if not business_visits:
+            await send_smart_response(chat_id, bus_id, "За время вашего отсутствия никто не нарушал покой системы. Входящих контактов не зафиксировано, сэр.", is_direct=is_direct)
+            return True
+
+        report_lines = ["<b>Оперативный журнал контактов (Telegram Business):</b>\n"]
+        for cid, info in list(business_visits.items())[-8:]:
+            report_lines.append(
+                f"• <b>{info.get('name', 'Аноним')}</b> ({info.get('username', 'без юзера')}) в {info.get('time', '')}:\n"
+                f"  <i>«{info.get('last_msg', '')}»</i>"
+            )
+        report_msg = "\n\n".join(report_lines)
+        await send_smart_response(chat_id, bus_id, report_msg, is_direct=is_direct)
+        return True
+
+    # Очистить журнал визитов
+    if lower_text in ["очисти отчет", "!очисти отчет", "сброс отчета"]:
+        business_visits.clear()
+        await save_visits()
+        await send_smart_response(chat_id, bus_id, "Журнал визитов собеседников успешно очищен, сэр.", is_direct=is_direct)
+        return True
 
     # КНБ
     if lower_text.startswith(("кнб ", "!кнб ")):
@@ -818,7 +956,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
             f"<b>Диагностика JARVIS:</b>\n"
             f"• Статус хозяина: <b>{owner_status}</b>\n"
             f"• Активная модель: {primary_m}\n"
-            f"• Зрение: Qwen 3.8 27B Vision\n"
+            f"• Модули: Веб-поиск, FLUX Арт, Напоминания, Журнал визитов\n"
             f"• Голос: {tts_source} ({v_status})\n"
             f"• Статус собеседника: {g_status}\n"
             f"• Ключей Groq: {len(GROQ_KEYS)}"
@@ -925,6 +1063,21 @@ async def handle_business_message(message: types.Message):
                 pass
         return
 
+    user_input, is_voice = await extract_message_content(message)
+    if not user_input.strip():
+        return
+
+    # Фиксируем визит в журнал
+    user_name = message.from_user.full_name or "Гость"
+    username_str = f"@{message.from_user.username}" if message.from_user.username else "без юзернейма"
+    business_visits[str(chat_id)] = {
+        "name": user_name,
+        "username": username_str,
+        "time": datetime.datetime.now().strftime("%H:%M"),
+        "last_msg": user_input[:100]
+    }
+    asyncio.create_task(save_visits())
+
     # Проверка онлайна хозяина
     if not always_answer_mode:
         now = time.time()
@@ -950,13 +1103,8 @@ async def handle_business_message(message: types.Message):
             pass
         return
 
-    user_input, is_voice = await extract_message_content(message)
-    if not user_input.strip():
-        return
-
     await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING, business_connection_id=bus_id)
 
-    # 220 токенов для полноценного ответа без обрывов
     reply = await ask_groq(user_input, chat_id, JARVIS_PROMPT_GUEST, max_tokens=220)
     
     random_voice_chance = random.random() < 0.25
@@ -964,35 +1112,48 @@ async def handle_business_message(message: types.Message):
     await send_smart_response(chat_id, bus_id, reply, is_direct=False, send_as_voice=should_voice)
 
 
-# --- ФОНОВЫЙ ОЧИСТИТЕЛЬ ТАЙМАУТОВ ---
-async def cleaner_background_task():
+# --- ФОНОВЫЙ МОДУЛЬ НАПОМИНАНИЙ И ОЧИСТКИ ТАЙМАУТОВ ---
+async def cleaner_and_reminders_task():
     while True:
         try:
-            await asyncio.sleep(30)
+            await asyncio.sleep(5)
             now = time.time()
-            changed = False
+            changed_settings = False
 
+            # Проверка истекших мутов
             expired_mutes = [cid for cid, t in muted_chats.items() if t != float('inf') and now >= t]
             for cid in expired_mutes:
                 del muted_chats[cid]
-                changed = True
+                changed_settings = True
 
             expired_bans = [cid for cid, t in blocked_guests.items() if t != float('inf') and now >= t]
             for cid in expired_bans:
                 del blocked_guests[cid]
-                changed = True
+                changed_settings = True
 
-            if changed:
+            if changed_settings:
                 await save_settings()
+
+            # Проверка сработавших напоминаний
+            triggered = [r for r in reminders_list if now >= r.get("time", 0)]
+            if triggered:
+                for rem in triggered:
+                    notice = f"Сэр, сработал протокол хронометража!\nНапоминание: <b>{rem.get('text')}</b>"
+                    c_id = rem.get("chat_id")
+                    b_id = rem.get("bus_id", "")
+                    await send_smart_response(c_id, b_id, notice, is_direct=not bool(b_id), send_as_voice=True)
+                    reminders_list.remove(rem)
+                await save_reminders()
+
         except asyncio.CancelledError:
             break
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Ошибка в cleaner_and_reminders_task: {e}")
 
 
 # --- WEB СЕРВЕР RENDER (KEEP-ALIVE) ---
 async def handle_ping(request):
-    return web.Response(text="Jarvis Core is operational!")
+    return web.Response(text="Jarvis Core is fully operational!")
 
 
 async def setup_web_app():
@@ -1013,7 +1174,7 @@ async def main():
         return
 
     web_runner = await setup_web_app()
-    cleaner_task = asyncio.create_task(cleaner_background_task())
+    bg_task = asyncio.create_task(cleaner_and_reminders_task())
 
     try:
         await bot.delete_webhook(drop_pending_updates=True)
@@ -1023,7 +1184,7 @@ async def main():
     except TelegramConflictError:
         logger.critical("Конфликт сессий! Запущен второй бот.")
     finally:
-        cleaner_task.cancel()
+        bg_task.cancel()
         await web_runner.cleanup()
         await bot.session.close()
 
