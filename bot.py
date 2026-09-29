@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import datetime
+import io
 import json
 import logging
 import os
@@ -34,6 +35,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
 )
 from groq import APIError, AsyncGroq
+from PIL import Image
 
 # --- ЛОГИРОВАНИЕ ---
 logging.basicConfig(
@@ -51,8 +53,9 @@ OWNER_IDLE_TIMEOUT = 300
 force_offline_mode = False
 always_answer_mode = False
 last_owner_activity = 0.0
+last_auto_briefing_date = ""
 
-# Бесплатный публичный ключ Horde (бесконечный)
+# AI Horde публичный бесплатный ключ
 HORDE_API_KEY = os.getenv("HORDE_API_KEY", "0000000000").strip()
 
 # Голос Джарвиса
@@ -81,6 +84,7 @@ http_session: Optional[aiohttp.ClientSession] = None
 file_io_lock = asyncio.Lock()
 
 
+# --- КЭШИРОВАНИЕ ---
 class LRUCacheDict(OrderedDict):
     def __init__(self, maxsize: int = 500, *args, **kwargs):
         self.maxsize = maxsize
@@ -94,9 +98,48 @@ class LRUCacheDict(OrderedDict):
             self.popitem(last=False)
 
 
+# Кэш текстовых промптов и несжатых байтов для кнопки HD
 art_prompts_cache = LRUCacheDict(maxsize=300)
+art_bytes_cache = LRUCacheDict(maxsize=80)
 
 
+# --- РАНДОМАЙЗЕР ДЛЯ РЕЖИМА "УДИВИ МЕНЯ" ---
+APPEARANCE_POOL = [
+    "stunning pale gothic girl with long raven black hair and emerald eyes",
+    "gorgeous japanese model with sleek black hair and soft bedroom eyes",
+    "sensual athletic fitness blonde with sculpted curves and sunkissed skin",
+    "alluring brunette with wavy chestnut hair, hazel eyes and hourglass figure",
+    "delicate redheaded woman with subtle freckles and fiery silk hair"
+]
+
+SETTING_POOL = [
+    "luxury penthouse bedroom, messy white silk sheets, moody warm dim lighting, night city view through panoramic window",
+    "steamy transparent glass shower cabin, glistening water droplets on smooth skin, soft diffused light",
+    "warm candlelit vintage hotel room, soft shadows, cozy romantic atmosphere",
+    "private heated open-air onsen bath surrounded by bamboo at dusk"
+]
+
+POSES_POOL = [
+    ("all-fours kneeling pose on bed, hands on mattress, deeply arched back, elevated round buttocks, rear focus", "rear view angle from behind"),
+    ("lying sensually on back upon silk sheets, legs parted, knees bent open, relaxed posture", "overhead top-down view"),
+    ("sitting on edge of bed, thighs slightly parted, leaning back on hands, confident sensual posture", "front angle view"),
+    ("standing gracefully before full-length mirror, soft arch in back, side silhouette focus", "side profile view")
+]
+
+def generate_random_surprise_prompt() -> Tuple[str, str]:
+    appearance = random.choice(APPEARANCE_POOL)
+    setting = random.choice(SETTING_POOL)
+    pose, angle = random.choice(POSES_POOL)
+    
+    clean_desc = f"{appearance}, {pose} в локации ({setting[:40]}...)"
+    full_prompt = (
+        f"{appearance}, {pose}, {angle}, completely unclothed, natural bare skin, "
+        f"voluptuous natural curves, {setting}"
+    )
+    return full_prompt, clean_desc
+
+
+# --- GROQ API МЕНЕДЖЕР ---
 class GroqManager:
     def __init__(self, keys: List[str]):
         self.keys = keys
@@ -207,7 +250,7 @@ class GroqManager:
 groq_mgr = GroqManager(GROQ_KEYS)
 
 
-# --- РАБОТА С ФАЙЛАМИ ---
+# --- ПОТОКОБЕЗОПАСНАЯ РАБОТА С ФАЙЛАМИ ---
 async def async_save_json(path: Path, data: Any):
     async with file_io_lock:
         def _write():
@@ -353,7 +396,20 @@ async def process_jarvis_voice(text: str) -> Optional[Tuple[Path, bool]]:
     return raw_audio, False
 
 
-# --- БЕСКОНЕЧНЫЙ 18+ ДВИЖОК (AI HORDE + FALLBACK) ---
+# --- УДАЛЕНИЕ ВОДЯНОГО ЗНАКА ---
+def strip_watermark(image_bytes: bytes) -> bytes:
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as img:
+            w, h = img.size
+            cropped = img.crop((0, 0, w, h - 36))
+            out = io.BytesIO()
+            cropped.save(out, format="JPEG", quality=95)
+            return out.getvalue()
+    except Exception:
+        return image_bytes
+
+
+# --- БЕСКОНЕЧНЫЙ 18+ ДВИЖОК С АПСКЕЙЛОМ ЛИЦ (GFPGAN) ---
 NSFW_WORDS_TRIGGER = {
     "голая", "голый", "обнаженная", "обнаженный", "ню", "хентай", "порно", "секс", "18+", "nsfw",
     "эротика", "без одежды", "грудь", "соски", "постели", "nude", "naked", "голышом",
@@ -368,39 +424,33 @@ def is_nsfw_request(text: str) -> bool:
     return bool(words & NSFW_WORDS_TRIGGER)
 
 
-def resolve_anatomical_scene(prompt: str) -> Tuple[str, str, str, str, str, int, int]:
+def resolve_anatomical_scene(prompt: str, is_anime: bool = False) -> Tuple[str, str, str, str, str, int, int]:
     lower = prompt.lower()
     is_looking_wall = any(w in lower for w in ["стену", "в стену", "отвернулась", "отвернувшись", "вперед"])
-    is_looking_camera = any(w in lower for w in ["на меня", "в камеру", "на зрителя", "в глаза", "лицом"])
     is_rear_pose = any(w in lower for w in ["раком", "догги", "четвереньк", "сзади", "со спины", "попа", "жопа", "ягодицы"])
 
-    # В SD/Horde идеальные пропорции без артефактов — 512x768 или 768x512
-    if is_rear_pose or any(w in lower for w in ["лежа", "лежит", "на кровати"]):
-        width, height = 768, 512  # Альбомный для позы раком
-    elif any(w in lower for w in ["стоя", "в полный рост", "на коленях"]):
-        width, height = 512, 768  # Портретный
-    else:
+    if is_anime:
         width, height = 512, 512
+    else:
+        width, height = (896, 640) if is_rear_pose else (768, 768)
 
     if is_rear_pose:
-        pose = "all-fours kneeling pose, bending forward, hands on bed, arched back, elevated buttocks, rear focus, natural thighs"
-        angle = "rear view angle, shot directly from behind, buttocks and arched back focus"
-        body = "smooth natural skin texture, slender waist, arched spine, voluptuous rounded buttocks, toned thighs"
+        pose = "all-fours kneeling pose on bed, leaning forward, hands on mattress, deeply arched back, elevated round buttocks, natural thighs, knees on bed"
+        angle = "shot directly from behind, rear view focus, back curvature focus"
+        body = "smooth bare skin, slender waist, arched lower spine, natural feminine buttocks, toned thighs"
         if is_looking_wall:
-            head_and_eyes = "back of head visible, hair falling back, head turned towards the wall, completely facing away"
-        elif is_looking_camera:
-            head_and_eyes = "head turned back over shoulder looking at viewer, seductive eyes"
+            head_and_eyes = "facing completely away from camera, head turned forward towards wall, back of head and hair visible, looking at wall, face not visible"
         else:
-            head_and_eyes = "profile view of face, neutral calm look"
+            head_and_eyes = "head turned back over shoulder towards camera, looking back"
     elif any(w in lower for w in ["на спине", "миссионерск"]):
-        pose = "lying sensually on back, thighs parted, knees bent open"
-        angle = "top down shot, overhead angle"
-        body = "bare chest, natural breasts, slender waist, smooth inner thighs"
-        head_and_eyes = "looking up at camera, seductive eyes, parted lips"
+        pose = "lying on back, thighs parted, knees bent open"
+        angle = "overhead angle looking down"
+        body = "natural breasts, erect nipples, slender stomach, toned inner thighs"
+        head_and_eyes = "looking up at viewer, parted lips"
     else:
         pose = "seductive natural pose, relaxed posture"
         angle = "front view angle"
-        body = "bare skin, natural curves, hourglass figure"
+        body = "natural feminine anatomy, hourglass figure"
         head_and_eyes = "direct eye contact, gentle expression"
 
     clothing = "completely unclothed, bare skin, totally naked, fully uncensored"
@@ -411,30 +461,27 @@ def resolve_anatomical_scene(prompt: str) -> Tuple[str, str, str, str, str, int,
 
 
 async def generate_infinite_nsfw(prompt: str, is_anime: bool = False) -> Optional[bytes]:
-    """Генерация через AI Horde с авто-переключением на Pollinations."""
     if not http_session:
         return None
 
-    pose, angle, body, head, clothing, width, height = resolve_anatomical_scene(prompt)
-    solo_anchor = "solo, 1girl, single female, only one person"
+    pose, angle, body, head, clothing, width, height = resolve_anatomical_scene(prompt, is_anime=is_anime)
+    solo_anchor = "1girl, solo, single female, solitary"
 
     if is_anime:
-        selected_models = ["AbyssOrangeMix3", "AnyLoRA", "Hentai Diffusion", "AOM3A1B"]
+        selected_models = ["AbyssOrangeMix3", "AnyLoRA", "Hentai Diffusion"]
         style_prompt = "masterpiece, best quality, authentic 2d anime hentai, clean lineart, uncensored"
     else:
         selected_models = ["CyberRealistic", "Realistic Vision", "ICBINP - I Can't Believe It's Not Photo"]
-        style_prompt = "masterpiece, raw photo, realistic skin texture, authentic lighting, uncensored, 8k"
+        style_prompt = "masterpiece, raw photo, realistic human skin texture, authentic lighting, uncensored, 8k"
 
     full_prompt = f"{style_prompt}, {solo_anchor}, {pose}, {angle}, {body}, {head}, {clothing}"
     negative_prompt = (
-        "two girls, multiple people, fused bodies, extra limbs, extra heads, deformed, "
-        "bad hands, missing fingers, blurry, watermark, signature, censorship, mosaic"
+        "two girls, 2girls, multiple people, duplicate, fused bodies, extra limbs, extra heads, "
+        "deformed, bad anatomy, bad hands, blurry, watermark, signature, logo"
     )
 
-    headers = {
-        "apikey": HORDE_API_KEY,
-        "Client-Agent": "JarvisAiBot:v2.0"
-    }
+    # 1. Запрос в AI Horde с включенным GFPGAN (починка глаз/лиц)
+    headers = {"apikey": HORDE_API_KEY, "Client-Agent": "JarvisAiBot:v2.5"}
     payload = {
         "prompt": f"{full_prompt} ### {negative_prompt}",
         "params": {
@@ -445,45 +492,41 @@ async def generate_infinite_nsfw(prompt: str, is_anime: bool = False) -> Optiona
             "height": height,
             "karras": True,
             "nsfw": True,
-            "censor_nsfw": False
+            "censor_nsfw": False,
+            "post_processing": ["GFPGAN"]  # Авто-реставрация лиц!
         },
         "nsfw": True,
         "censor_nsfw": False,
         "models": selected_models
     }
 
-    # 1. Попытка через AI Horde (100% без цензуры)
     try:
-        async with http_session.post("https://aihorde.net/api/v2/generate/async", json=payload, headers=headers, timeout=15) as resp:
+        async with http_session.post("https://aihorde.net/api/v2/generate/async", json=payload, headers=headers, timeout=12) as resp:
             if resp.status == 202:
                 data = await resp.json()
                 task_id = data.get("id")
                 if task_id:
                     check_url = f"https://aihorde.net/api/v2/generate/check/{task_id}"
-                    for _ in range(25):  # Опрос до 50 секунд
+                    for _ in range(12):  # Ждем до 24 сек
                         await asyncio.sleep(2)
                         async with http_session.get(check_url, headers=headers) as chk:
-                            if chk.status == 200:
-                                chk_data = await chk.json()
-                                if chk_data.get("done"):
-                                    status_url = f"https://aihorde.net/api/v2/generate/status/{task_id}"
-                                    async with http_session.get(status_url, headers=headers) as st:
-                                        res_data = await st.json()
-                                        gens = res_data.get("generations", [])
-                                        if gens and gens[0].get("img"):
-                                            async with http_session.get(gens[0]["img"]) as img_resp:
-                                                if img_resp.status == 200:
-                                                    return await img_resp.read()
-                                    break
-                                elif chk_data.get("faulted"):
-                                    break
-    except Exception as e:
-        logger.warning(f"AI Horde не ответил вовремя ({e}), переключаюсь на резерв...")
+                            if chk.status == 200 and (await chk.json()).get("done"):
+                                status_url = f"https://aihorde.net/api/v2/generate/status/{task_id}"
+                                async with http_session.get(status_url, headers=headers) as st:
+                                    res_data = await st.json()
+                                    gens = res_data.get("generations", [])
+                                    if gens and gens[0].get("img"):
+                                        async with http_session.get(gens[0]["img"]) as img_resp:
+                                            if img_resp.status == 200:
+                                                return await img_resp.read()
+                                break
+    except Exception:
+        pass
 
-    # 2. Быстрый резервный канал (Pollinations)
+    # 2. Резервный быстрый канал (Pollinations) с авто-обрезкой водяного знака
     encoded = urllib.parse.quote(full_prompt.strip())
     seed = random.randint(100, 9999999)
-    res_w, res_h = (1024, 768) if width > height else (768, 1024)
+    res_w, res_h = (896, 896) if is_anime else (896, 640)
     fallback_url = (
         f"https://image.pollinations.ai/prompt/{encoded}?"
         f"width={res_w}&height={res_h}&model=flux&seed={seed}&nologo=true&nofeed=true&safe=false"
@@ -492,15 +535,16 @@ async def generate_infinite_nsfw(prompt: str, is_anime: bool = False) -> Optiona
     try:
         async with http_session.get(fallback_url, headers=fallback_headers, timeout=40) as fb_resp:
             if fb_resp.status == 200:
-                data = await fb_resp.read()
-                if len(data) > 5000:
-                    return data
+                raw_bytes = await fb_resp.read()
+                if len(raw_bytes) > 5000:
+                    return strip_watermark(raw_bytes)
     except Exception as e:
         logger.error(f"Fallback Error: {e}")
 
     return None
 
 
+# --- КЛАВИАТУРА АРТА (С КНОПКАМИ HD И РАНДОМАЙЗЕРОМ) ---
 def get_art_keyboard(gen_id: str, current_style: str = "real") -> InlineKeyboardMarkup:
     toggle_style = "anime" if current_style == "real" else "real"
     toggle_label = "🎨 В Аниме" if current_style == "real" else "🎨 В Реализм"
@@ -511,13 +555,47 @@ def get_art_keyboard(gen_id: str, current_style: str = "real") -> InlineKeyboard
                 InlineKeyboardButton(text=toggle_label, callback_data=f"art_retry:{gen_id}:{toggle_style}"),
             ],
             [
+                InlineKeyboardButton(text="📥 Оригинал (HD файл)", callback_data=f"art_hd:{gen_id}"),
+                InlineKeyboardButton(text="🎲 Удиви меня", callback_data=f"art_surprise:{current_style}")
+            ],
+            [
                 InlineKeyboardButton(text="🗑 Удалить арт", callback_data=f"art_delete:{gen_id}")
             ]
         ]
     )
 
 
-# --- СИСТЕМНЫЕ ПРОМПТЫ ДЖАРВИСА ---
+# --- ФОРМИРОВАНИЕ УТРЕННЕГО БРИФИНГА ---
+def build_daily_briefing() -> str:
+    now_dt = datetime.datetime.now()
+    date_str = now_dt.strftime("%d.%m.%Y")
+    time_str = now_dt.strftime("%H:%M")
+
+    lines = [
+        f"<b>Доброе утро, сэр. Ежедневный брифинг систем на {date_str} ({time_str}):</b>\n",
+        f"• <b>Статус ядра JARVIS:</b> Активно, все системы в строю.",
+        f"• <b>Режим 18+ (NSFW):</b> {'РАЗБЛОКИРОВАН' if nsfw_art_mode else 'Заблокирован'}"
+    ]
+
+    # Визиты в Telegram Business
+    if business_visits:
+        lines.append(f"\n<b>Ночной журнал Telegram Business ({len(business_visits)} контактов):</b>")
+        for cid, info in list(business_visits.items())[-5:]:
+            lines.append(f"• <b>{info.get('name', 'Гость')}</b> ({info.get('username', '')}) в {info.get('time', '')}: <i>«{info.get('last_msg', '')[:45]}»</i>")
+    else:
+        lines.append("\n• <b>Telegram Business:</b> Ночных обращений не зафиксировано, покой не нарушен.")
+
+    # Напоминания
+    if reminders_list:
+        lines.append(f"\n• <b>Активных задач в календаре:</b> {len(reminders_list)} шт.")
+    else:
+        lines.append("\n• <b>Хронометраж:</b> Активных напоминаний на сегодня нет.")
+
+    lines.append("\n<i>«Желаю продуктивного дня. Я продолжаю дежурство, сэр.»</i>")
+    return "\n".join(lines)
+
+
+# --- ПРОМПТЫ ДЖАРВИСА ---
 STRICT_RULES = (
     "\nПРАВИЛА:\n"
     "1. ЯЗЫК: Исключительно русский.\n"
@@ -718,7 +796,7 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
     return "Интерфейсы обработки временно перегружены, сэр."
 
 
-# --- ОБРАБОТКА КОМАНД ---
+# --- ОБРАБОТЧИК КОМАНД ---
 async def process_bot_command(message: types.Message, user_input: str, is_owner: bool, bus_id: str = "") -> bool:
     global force_offline_mode, always_answer_mode, last_owner_activity, nsfw_art_mode
 
@@ -727,7 +805,45 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
     is_direct = not bool(bus_id)
 
     if lower in ["игра", "тапалка", "/game"]:
-        await send_smart_response(chat_id, bus_id, f"Инициирую запуск систем:\n{GAME_URL}", is_direct=is_direct)
+        await send_smart_response(chat_id, bus_id, f"Инициирую запуск мини-приложения:\n{GAME_URL}", is_direct=is_direct)
+        return True
+
+    # Утренний брифинг (Фича 7)
+    if lower in ["брифинг", "джарвис брифинг", "!брифинг", "утренний отчет", "сводка"]:
+        if not is_owner:
+            return True
+        briefing_text = build_daily_briefing()
+        await send_smart_response(chat_id, bus_id, briefing_text, is_direct=is_direct, send_as_voice=True)
+        return True
+
+    # Режим "Удиви меня" (Фича 3)
+    if lower in ["удиви меня", "джарвис удиви меня", "!сюрприз", "рандом арт"]:
+        if not nsfw_art_mode:
+            await send_smart_response(chat_id, bus_id, "Протокол 18+ деактивирован. Включите командой <code>18+ вкл</code>, сэр.", is_direct=is_direct)
+            return True
+
+        surprise_prompt, clean_desc = generate_random_surprise_prompt()
+        await send_smart_response(chat_id, bus_id, f"Инициирую случайную визуализацию: <i>«{clean_desc}»</i>...", is_direct=is_direct)
+
+        img_bytes = await generate_infinite_nsfw(surprise_prompt, is_anime=False)
+        if img_bytes:
+            gen_id = uuid.uuid4().hex[:8]
+            art_prompts_cache[gen_id] = surprise_prompt
+            art_bytes_cache[gen_id] = img_bytes
+
+            photo = BufferedInputFile(img_bytes, filename=f"art_{gen_id}.jpg")
+            kb = get_art_keyboard(gen_id, current_style="real")
+            kwargs = {
+                "chat_id": chat_id,
+                "photo": photo,
+                "caption": f"Случайный протокол готов, сэр.\nСценарий: {clean_desc}",
+                "reply_markup": kb
+            }
+            if bus_id:
+                kwargs["business_connection_id"] = bus_id
+            await bot.send_photo(**kwargs)
+        else:
+            await send_smart_response(chat_id, bus_id, "Сбой генератора. Повторите попытку, сэр.", is_direct=is_direct)
         return True
 
     # Управление 18+
@@ -737,7 +853,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
             return True
         nsfw_art_mode = True
         await save_settings()
-        await send_smart_response(chat_id, bus_id, "Бесконечный протокол 18+ активирован. Генератор без цензуры включен, сэр.", is_direct=is_direct, send_as_voice=True)
+        await send_smart_response(chat_id, bus_id, "Бесконечный протокол 18+ активирован. Модели без цензуры включены, сэр.", is_direct=is_direct, send_as_voice=True)
         return True
 
     if lower in ["джарвис 18+ выкл", "!18+ выкл", "18+ выкл", "выключи 18+"]:
@@ -748,7 +864,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         await send_smart_response(chat_id, bus_id, "Фильтр безопасности 18+ активирован, сэр.", is_direct=is_direct)
         return True
 
-    # Генерация артов
+    # Стандартная генерация артов
     if re.search(r"\b(нарисуй|сгенерируй|создай арт|арт)\b", lower) or lower.startswith("!арт"):
         prompt = re.sub(r"\b(джарвис|пожалуйста|нарисуй|сгенерируй|создай арт|арт|!арт)\b", "", user_input, flags=re.I).strip(" ,:;!?")
         if not prompt:
@@ -759,16 +875,17 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
             await send_smart_response(chat_id, bus_id, "Протокол безопасности: взрослый контент заблокирован. Активируйте <code>18+ вкл</code>, сэр.", is_direct=is_direct)
             return True
 
-        await send_smart_response(chat_id, bus_id, f"Инициирую бесконечный синтез: <i>«{prompt}»</i>...", is_direct=is_direct)
+        await send_smart_response(chat_id, bus_id, f"Инициирую протокол визуализации: <i>«{prompt}»</i>...", is_direct=is_direct)
         is_anime = any(w in prompt.lower() for w in ["аниме", "хентай", "тян", "2d"])
         img_bytes = await generate_infinite_nsfw(prompt, is_anime=is_anime)
 
         if img_bytes:
             gen_id = uuid.uuid4().hex[:8]
             art_prompts_cache[gen_id] = prompt
+            art_bytes_cache[gen_id] = img_bytes
+
             photo = BufferedInputFile(img_bytes, filename=f"art_{gen_id}.jpg")
             kb = get_art_keyboard(gen_id, current_style="anime" if is_anime else "real")
-
             kwargs = {
                 "chat_id": chat_id,
                 "photo": photo,
@@ -779,7 +896,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
                 kwargs["business_connection_id"] = bus_id
             await bot.send_photo(**kwargs)
         else:
-            await send_smart_response(chat_id, bus_id, "Сбой соединения с узлами рендеринга. Повторите попытку, сэр.", is_direct=is_direct)
+            await send_smart_response(chat_id, bus_id, "Сбой соединения с узлами рендеринга. Попробуйте еще раз, сэр.", is_direct=is_direct)
         return True
 
     # Голосовой режим
@@ -880,7 +997,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         primary_m = models[0] if models else "LLaMA-3.3"
         status_msg = (
             f"<b>Диагностика систем JARVIS:</b>\n"
-            f"• Протокол 18+ (NSFW): <b>{'БЕСКОНЕЧНЫЙ (AI Horde + Fallback)' if nsfw_art_mode else 'Заблокирован'}</b>\n"
+            f"• Протокол 18+ (NSFW): <b>{'БЕСКОНЕЧНЫЙ (AI Horde + GFPGAN)' if nsfw_art_mode else 'Заблокирован'}</b>\n"
             f"• Голосовой синтез: {tts_source} (FFmpeg: {'ВКЛ' if HAS_FFMPEG else 'ВЫКЛ'})\n"
             f"• Модель логики: {primary_m}\n"
             f"• Ключей Groq онлайн: {len(GROQ_KEYS)}\n"
@@ -892,7 +1009,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
     return False
 
 
-# --- CALLBACK ОБРАБОТЧИКИ ---
+# --- CALLBACK ОБРАБОТЧИКИ КНОПОК ПОД АРТАМИ ---
 @dp.callback_query(F.data.startswith("art_retry:"))
 async def handle_art_retry(callback: types.CallbackQuery):
     try:
@@ -913,9 +1030,10 @@ async def handle_art_retry(callback: types.CallbackQuery):
     if img_bytes:
         new_gen_id = uuid.uuid4().hex[:8]
         art_prompts_cache[new_gen_id] = prompt
+        art_bytes_cache[new_gen_id] = img_bytes
+
         photo = BufferedInputFile(img_bytes, filename=f"art_{new_gen_id}.jpg")
         kb = get_art_keyboard(new_gen_id, current_style=target_style)
-
         style_label = "Аниме" if target_style == "anime" else "Реализм"
         await bot.send_photo(
             chat_id=callback.message.chat.id,
@@ -925,6 +1043,53 @@ async def handle_art_retry(callback: types.CallbackQuery):
         )
     else:
         await callback.message.reply("Сервер перегружен. Повторите нажатие через пару секунд, сэр.")
+
+
+# Фича 2: Отправка оригинального несжатого HD файла
+@dp.callback_query(F.data.startswith("art_hd:"))
+async def handle_art_hd(callback: types.CallbackQuery):
+    gen_id = callback.data.split(":")[1]
+    img_bytes = art_bytes_cache.get(gen_id)
+
+    if not img_bytes:
+        await callback.answer("Файл в HD устарел или был вытеснен из кэша.", show_alert=True)
+        return
+
+    await callback.answer("Отправляю несжатый оригинал...")
+    doc = BufferedInputFile(img_bytes, filename=f"jarvis_original_{gen_id}.jpg")
+    await bot.send_document(
+        chat_id=callback.message.chat.id,
+        document=doc,
+        caption="Оригинальный файл в максимальном разрешении без сжатия Telegram, сэр."
+    )
+
+
+# Фича 3: Случайный арт по кнопке
+@dp.callback_query(F.data.startswith("art_surprise:"))
+async def handle_art_surprise_button(callback: types.CallbackQuery):
+    current_style = callback.data.split(":")[1]
+    await callback.answer("Генерирую случайную сцену...")
+
+    surprise_prompt, clean_desc = generate_random_surprise_prompt()
+    await bot.send_chat_action(chat_id=callback.message.chat.id, action=ChatAction.UPLOAD_PHOTO)
+
+    img_bytes = await generate_infinite_nsfw(surprise_prompt, is_anime=(current_style == "anime"))
+    if img_bytes:
+        new_gen_id = uuid.uuid4().hex[:8]
+        art_prompts_cache[new_gen_id] = surprise_prompt
+        art_bytes_cache[new_gen_id] = img_bytes
+
+        photo = BufferedInputFile(img_bytes, filename=f"art_{new_gen_id}.jpg")
+        kb = get_art_keyboard(new_gen_id, current_style=current_style)
+        await bot.send_photo(
+            chat_id=callback.message.chat.id,
+            photo=photo,
+            caption=f"🎲 <b>Случайный сценарий:</b> {clean_desc}",
+            parse_mode="HTML",
+            reply_markup=kb
+        )
+    else:
+        await callback.message.reply("Сбой узла рендеринга. Повторите попытку, сэр.")
 
 
 @dp.callback_query(F.data.startswith("art_delete:"))
@@ -1043,20 +1208,30 @@ async def handle_business_message(message: types.Message):
     await send_smart_response(chat_id, bus_id, reply, is_direct=False, send_as_voice=should_voice)
 
 
-# --- ФОНОВЫЕ СЛУЖБЫ ---
+# --- ФОНОВЫЕ СЛУЖБЫ: АВТО-БРИФИНГ В 09:00 И НАПОМИНАНИЯ ---
 async def cleaner_and_reminders_task():
-    global reminders_list
+    global reminders_list, last_auto_briefing_date
     while True:
         try:
             await asyncio.sleep(5)
             now = time.time()
+            now_dt = datetime.datetime.now()
+            today_date = now_dt.strftime("%Y-%m-%d")
 
+            # Фича 7: Автоматический брифинг в 09:00 утра для хозяина
+            if now_dt.hour == 9 and now_dt.minute == 0 and last_auto_briefing_date != today_date and OWNER_ID != 0:
+                last_auto_briefing_date = today_date
+                briefing_msg = build_daily_briefing()
+                await send_smart_response(OWNER_ID, "", briefing_msg, is_direct=True, send_as_voice=True)
+
+            # Очистка мутов
             expired_mutes = [cid for cid, exp in muted_chats.items() if exp != float('inf') and now >= exp]
             if expired_mutes:
                 for cid in expired_mutes:
                     muted_chats.pop(cid, None)
                 await save_settings()
 
+            # Обработка напоминаний
             remaining, triggered = [], []
             for r in reminders_list:
                 (triggered if now >= r.get("time", 0) else remaining).append(r)
@@ -1101,7 +1276,7 @@ async def main():
 
     try:
         await bot.delete_webhook(drop_pending_updates=True)
-        logger.info(f"Джарвис онлайн. Движок 18+: AI Horde (Бесконечный). Голос: {'Fish Audio' if FISH_AUDIO_API_KEY else 'Edge-TTS'}")
+        logger.info(f"Джарвис онлайн. Движок: AI Horde (GFPGAN). Брифинг: 09:00. Голос: {'Fish Audio' if FISH_AUDIO_API_KEY else 'Edge-TTS'}")
         await dp.start_polling(bot)
     except TelegramConflictError:
         logger.critical("Запущен дубликат бота!")
