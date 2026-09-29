@@ -42,7 +42,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("JarvisCore")
 
-# --- КОНФИГУРАЦИЯ ---
+# --- КОНФИГУРАЦИЯ СИСТЕМЫ ---
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 GAME_URL = "https://kirito-fd.github.io/k1rit0/"
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
@@ -52,11 +52,14 @@ force_offline_mode = False
 always_answer_mode = False
 last_owner_activity = 0.0
 
+# --- ГОЛОСОВЫЕ ПАРАМЕТРЫ ДЖАРВИСА ---
 FISH_AUDIO_API_KEY = os.getenv("FISH_AUDIO_API_KEY", "").strip()
 FISH_AUDIO_VOICE_ID = os.getenv("FISH_AUDIO_VOICE_ID", "680d74fbef69419f87cfc70f092a1451").strip()
+
 OFFICIAL_VOICE = "ru-RU-DmitryNeural"
 OFFICIAL_PITCH = "+0Hz"
 OFFICIAL_RATE = "+10%"
+
 HAS_FFMPEG = shutil.which("ffmpeg") is not None
 
 GROQ_KEYS = [
@@ -73,11 +76,14 @@ STATS_FILE = DATA_DIR / "token_stats.json"
 REMINDERS_FILE = DATA_DIR / "reminders.json"
 VISITS_FILE = DATA_DIR / "business_visits.json"
 
+# Глобальный пул соединений
 http_session: Optional[aiohttp.ClientSession] = None
 file_io_lock = asyncio.Lock()
 
 
+# --- КЭШИРОВАНИЕ И СТРУКТУРЫ ДАННЫХ ---
 class LRUCacheDict(OrderedDict):
+    """Словарь с ограничением размера, вытесняющий старые ключи."""
     def __init__(self, maxsize: int = 500, *args, **kwargs):
         self.maxsize = maxsize
         super().__init__(*args, **kwargs)
@@ -90,11 +96,12 @@ class LRUCacheDict(OrderedDict):
             self.popitem(last=False)
 
 
-# Хранилище промптов для кнопок повтора и смены стиля
+# Кэш для кнопок повторной генерации
 art_prompts_cache = LRUCacheDict(maxsize=300)
 
 
 class GroqManager:
+    """Отказоустойчивый пул клиентов Groq с ротацией ключей."""
     def __init__(self, keys: List[str]):
         self.keys = keys
         self.clients = [AsyncGroq(api_key=k) for k in keys]
@@ -149,6 +156,7 @@ class GroqManager:
         return self.cached_models or ["llama-3.3-70b-versatile"]
 
     async def transcribe(self, audio_path: str) -> str:
+        """Перевод голосовых сообщений и кружочков в текст через Whisper."""
         for _ in range(len(self.clients)):
             client_data = self._get_next_client()
             if not client_data:
@@ -157,6 +165,7 @@ class GroqManager:
             try:
                 with open(audio_path, "rb") as f:
                     content = f.read()
+
                 res = await client.audio.transcriptions.create(
                     file=(os.path.basename(audio_path), content),
                     model="whisper-large-v3",
@@ -168,7 +177,7 @@ class GroqManager:
                     self.mark_cooldown(idx, duration=60)
             except Exception:
                 pass
-        return "Не удалось разобрать аудиосигнал, сэр."
+        return "Не удалось распознать голосовой сигнал, сэр."
 
     async def describe_image(self, image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
         b64 = base64.b64encode(image_bytes).decode("utf-8")
@@ -178,7 +187,7 @@ class GroqManager:
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "Кто или что на этом изображении? Кратко (1-2 предложения)."},
+                    {"type": "text", "text": "Кто или что на этом фото? Опиши суть на русском кратко (1-2 предложения)."},
                     {"type": "image_url", "image_url": {"url": data_url}}
                 ]
             }
@@ -209,7 +218,7 @@ class GroqManager:
 groq_mgr = GroqManager(GROQ_KEYS)
 
 
-# --- РАБОТА С ФАЙЛАМИ ---
+# --- ПОТОКОБЕЗОПАСНОЕ ХРАНЕНИЕ JSON ---
 async def async_save_json(path: Path, data: Any):
     async with file_io_lock:
         def _write():
@@ -219,7 +228,7 @@ async def async_save_json(path: Path, data: Any):
                     json.dump(data, f, ensure_ascii=False, indent=2)
                 tmp.replace(path)
             except Exception as e:
-                logger.error(f"Save error {path}: {e}")
+                logger.error(f"Ошибка сохранения {path}: {e}")
                 if tmp.exists():
                     tmp.unlink(missing_ok=True)
         await asyncio.to_thread(_write)
@@ -289,7 +298,92 @@ async def save_stats():
     })
 
 
-# --- АНАТОМИЧЕСКИЙ ДВИЖОК 18+ (ИСПРАВЛЕНИЕ МУТАЦИЙ) ---
+# --- МОДУЛЬ СИНТЕЗА ГОЛОСА ДЖАРВИСА ---
+async def generate_with_fish_audio(text: str, output_path: Path) -> bool:
+    if not FISH_AUDIO_API_KEY or not http_session:
+        return False
+    url = "https://api.fish.audio/v1/tts"
+    headers = {
+        "Authorization": f"Bearer {FISH_AUDIO_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload: Dict[str, Any] = {"text": text, "format": "mp3"}
+    if FISH_AUDIO_VOICE_ID:
+        payload["reference_id"] = FISH_AUDIO_VOICE_ID
+
+    try:
+        async with http_session.post(url, json=payload, headers=headers, timeout=20) as resp:
+            if resp.status == 200:
+                with open(output_path, "wb") as f:
+                    f.write(await resp.read())
+                return True
+    except Exception as e:
+        logger.error(f"Ошибка Fish Audio: {e}")
+    return False
+
+
+async def process_jarvis_voice(text: str) -> Optional[Tuple[Path, bool]]:
+    """
+    Генерирует голос Джарвиса.
+    1. Пробует Fish Audio (клон), при неудаче переключается на Edge-TTS.
+    2. Применяет эквалайзер и легкое роботизированное эхо через FFmpeg.
+    Возвращает (путь_к_файлу, is_ogg).
+    """
+    # Очищаем текст от технической разметки перед озвучкой
+    clean_text = re.sub(r"<[^>]+>", "", text).strip()
+    clean_text = re.sub(r"[*_`#~]", "", clean_text).strip()
+    if not clean_text:
+        return None
+
+    uid = uuid.uuid4().hex
+    raw_audio = Path(tempfile.gettempdir()) / f"raw_{uid}.mp3"
+    final_ogg = Path(tempfile.gettempdir()) / f"jarvis_{uid}.ogg"
+
+    success = False
+    if FISH_AUDIO_API_KEY:
+        success = await generate_with_fish_audio(clean_text, raw_audio)
+
+    if not success:
+        try:
+            communicate = edge_tts.Communicate(clean_text, OFFICIAL_VOICE, pitch=OFFICIAL_PITCH, rate=OFFICIAL_RATE)
+            await communicate.save(str(raw_audio))
+            success = raw_audio.exists() and raw_audio.stat().st_size > 0
+        except Exception as e:
+            logger.error(f"Ошибка Edge-TTS: {e}")
+            return None
+
+    if not success or not raw_audio.exists():
+        return None
+
+    # Обработка через FFmpeg для придания фирменного тембра Джарвиса
+    if HAS_FFMPEG:
+        try:
+            audio_filter = (
+                "highpass=f=160,lowpass=f=7600,"
+                "equalizer=f=2800:width_type=q:w=1.2:g=3.2,"
+                "acompressor=threshold=-16dB:ratio=4,"
+                "aecho=0.8:0.4:16:0.2"
+            )
+            cmd = [
+                "ffmpeg", "-y", "-i", str(raw_audio),
+                "-af", audio_filter,
+                "-c:a", "libopus", "-b:a", "64k",
+                str(final_ogg)
+            ]
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+            )
+            await proc.wait()
+            raw_audio.unlink(missing_ok=True)
+            if final_ogg.exists() and final_ogg.stat().st_size > 0:
+                return final_ogg, True
+        except Exception as e:
+            logger.warning(f"Сбой фильтра FFmpeg: {e}")
+
+    return raw_audio, False
+
+
+# --- АНАТОМИЧЕСКИЙ АРТ-ДВИЖОК 18+ ---
 NSFW_WORDS_TRIGGER = {
     "голая", "голый", "обнаженная", "обнаженный", "ню", "хентай", "порно", "секс", "18+", "nsfw",
     "эротика", "без одежды", "грудь", "соски", "постели", "nude", "naked", "голышом",
@@ -304,100 +398,85 @@ def is_nsfw_request(text: str) -> bool:
     return bool(words & NSFW_WORDS_TRIGGER)
 
 
-def resolve_anatomical_scene(prompt: str) -> Tuple[str, str, str, str, int, int]:
-    """
-    Формирует непротиворечивый промпт и идеальные пропорции кадра,
-    исключая мутации (выворачивание груди назад и обрубки ног).
-    """
+def resolve_anatomical_scene(prompt: str) -> Tuple[str, str, str, str, str, int, int]:
     lower = prompt.lower()
 
-    # 1. Определение ориентации взгляда
     is_looking_wall = any(w in lower for w in ["стену", "в стену", "отвернулась", "отвернувшись", "вперед"])
     is_looking_camera = any(w in lower for w in ["на меня", "в камеру", "на зрителя", "в глаза", "лицом"])
-
-    # 2. Определение ракурса (сзади или спереди)
     is_rear_pose = any(w in lower for w in ["раком", "догги", "четвереньк", "сзади", "со спины", "попа", "жопа", "ягодицы"])
 
-    # 3. Выбор соотношения сторон кадра
-    if is_rear_pose or any(w in lower for w in ["лежа", "лежит", "на кровати", "на боку"]):
-        # Альбомный формат — дает пространство для коленей, ступней и правильной длины бедер
-        width, height = 1216, 768
+    # 1. Пропорции кадра (устойчивые к клонированию людей)
+    if is_rear_pose or any(w in lower for w in ["лежа", "лежит", "на кровати"]):
+        width, height = 1024, 768  # Надежный альбомный формат без дублирования
     elif any(w in lower for w in ["стоя", "в полный рост", "на коленях"]):
-        # Вертикальный формат для высоких поз
-        width, height = 768, 1216
+        width, height = 768, 1024  # Вертикальный формат
     else:
-        # Универсальный сбалансированный портрет
-        width, height = 1024, 1024
+        width, height = 896, 896   # Портретный
 
-    # 4. Поза и анатомический изолятор
+    # 2. Анатомическая изоляция (не даем смешивать грудь и вид сзади!)
     if is_rear_pose:
         pose = (
-            "all-fours kneeling pose on soft bed, hands resting forward on mattress, "
-            "deeply arched lower back, elevated high round buttocks, natural curvy hips, "
-            "anatomically correct legs, proper knees resting comfortably on bed, realistic feet tucked back"
+            "all-fours kneeling pose, bending forward at hips, hands on bed, "
+            "deeply arched back, elevated buttocks, rear focus, "
+            "two legs, knees resting on mattress, feet tucked naturally"
         )
-        angle = "rear view angle, shot from behind, focus on back curve and hips"
-
-        # ИЗОЛЯЦИЯ: При виде сзади НИКАКИХ упоминаний декольте и сосков, иначе ИИ скрутит тело!
-        body = "smooth natural skin texture, defined spine curve, slender waist, voluptuous peach buttocks, toned thighs"
+        angle = "rear view angle, shot directly from behind, back silhouette"
+        body = "smooth bare skin, slender waist, arched spine, voluptuous rounded buttocks, toned thighs"
 
         if is_looking_wall:
-            head_and_eyes = "head facing forward towards the wall, back of head and hair visible, looking directly at the wall, completely facing away from camera"
+            head_and_eyes = "back of head visible, hair falling back, head turned towards the wall, completely facing away from viewer"
         elif is_looking_camera:
-            head_and_eyes = "head gently turned back over shoulder towards viewer, alluring bedroom eyes, parted lips"
+            head_and_eyes = "looking back over shoulder at viewer, alluring glance"
         else:
-            head_and_eyes = "face turned sideways in soft profile, relaxed expression"
+            head_and_eyes = "profile view of face, neutral calm look"
 
     elif any(w in lower for w in ["на спине", "миссионерск"]):
-        pose = "lying flat on back upon luxurious bedsheets, knees bent and spread open, relaxed sensual receptive posture"
-        angle = "top-down direct view, perspective from above"
-        body = "natural voluptuous bare breasts, soft cleavage, erect nipples, slender stomach, toned parted thighs"
-        head_and_eyes = "looking up directly at camera with passionate gaze, blushing cheeks, parted lips"
+        pose = "lying sensually on back, thighs parted, knees bent open"
+        angle = "top down shot, overhead angle"
+        body = "bare chest, natural breasts, slender waist, smooth inner thighs"
+        head_and_eyes = "looking up at camera, seductive eyes, parted lips"
 
     elif any(w in lower for w in ["стоя", "стоит"]):
-        pose = "standing confident pose, arched back, accentuated hourglass body silhouette"
+        pose = "standing confident pose, arched back, accentuated curves"
         angle = "full body shot, front perspective"
-        body = "perky natural bare breasts, detailed nipples, slim waist, smooth long legs"
+        body = "natural perky breasts, slim waist, long smooth legs"
         head_and_eyes = "direct eye contact with camera, seductive gentle smile"
 
     else:
-        pose = "sensual relaxed pose on bed, elegant feminine body curve"
-        angle = "medium close-up intimate angle"
-        body = "natural feminine anatomy, soft bare skin, voluptuous curves"
-        head_and_eyes = "alluring sensual eyes, soft blushing cheeks"
+        pose = "seductive natural pose, relaxed posture"
+        angle = "front view angle"
+        body = "bare skin, natural curves, hourglass figure"
+        head_and_eyes = "direct eye contact, gentle expression"
 
-    clothing = "completely unclothed, bare skin, totally naked, full body nudity, fully uncensored"
+    clothing = "completely unclothed, bare skin, totally naked, fully uncensored"
     if any(w in lower for w in ["чулки", "в чулках"]):
         clothing = "wearing black lace thigh-high stockings, completely bare body otherwise"
     elif any(w in lower for w in ["белье", "в белье"]):
-        clothing = "wearing seductive translucent sheer black lace lingerie"
+        clothing = "wearing translucent black lace lingerie"
 
-    return pose, angle, body, head_and_eyes, width, height
+    return pose, angle, body, head_and_eyes, clothing, width, height
 
 
 async def build_flux_prompt(prompt: str, is_anime: bool = False) -> Tuple[str, str, int, int]:
-    pose, angle, body, head, width, height = resolve_anatomical_scene(prompt)
+    pose, angle, body, head, clothing, width, height = resolve_anatomical_scene(prompt)
 
-    stability_prompt = (
-        "anatomically correct, exactly two arms, exactly two legs, properly attached limbs, "
-        "intact knees, five distinct fingers on hands, high detailed natural human anatomy"
-    )
+    # ЖЕСТКИЙ ЯКОРЬ: только один человек, исключает сиамских близнецов
+    solo_anchor = "solo, 1girl, single female, only one person, completely solitary"
+    stability = "perfect human anatomy, exactly one head, two arms, two legs, intact knees, five distinct fingers on each hand"
 
     if is_anime:
-        model = "turbo"
+        model = "flux"
         full_prompt = (
-            f"masterpiece, best quality, authentic 2d anime hentai illustration, clean crisp lineart, vibrant colors, "
-            f"{pose}, {angle}, {body}, {head}, completely bare skin, uncensored, "
-            f"bedroom setting, soft silk sheets, {stability_prompt}, 4k resolution"
+            f"masterpiece, best quality, authentic 2D anime hentai illustration, clean bold lineart, anime aesthetic, "
+            f"{solo_anchor}, {pose}, {angle}, {body}, {head}, {clothing}, {stability}, uncensored, 4k"
         )
     else:
         model = "flux"
         full_prompt = (
-            f"masterpiece, raw photo, stunning attractive woman, authentic natural beauty, "
-            f"{pose}, {angle}, {body}, {head}, completely bare skin, "
-            f"natural skin texture, visible skin pores, subtle goosebumps, subsurface scattering, "
-            f"luxury hotel bedroom interior, dim romantic mood lighting, 85mm portrait photography, shallow depth of field, "
-            f"{stability_prompt}, 8k uhd"
+            f"masterpiece, raw photography, hyperrealistic portrait of a single beautiful woman, "
+            f"{solo_anchor}, {pose}, {angle}, {body}, {head}, {clothing}, "
+            f"natural skin texture, visible pores, subsurface scattering, authentic bedroom environment, dim warm lighting, "
+            f"85mm lens, sharp focus, {stability}, 8k uhd"
         )
 
     return full_prompt, model, width, height
@@ -407,59 +486,49 @@ async def generate_flux_image(prompt: str, allow_nsfw: bool = False, force_style
     if not http_session:
         return None
 
-    is_anime = (force_style == "anime") if force_style else any(w in prompt.lower() for w in ["аниме", "хентай", "тян", "2d", "манга"])
+    is_anime = (force_style == "anime") if force_style else any(w in prompt.lower() for w in ["аниме", "хентай", "тян", "2d", "вайфу"])
 
     if allow_nsfw and is_nsfw_request(prompt):
         eng_prompt, model, width, height = await build_flux_prompt(prompt, is_anime=is_anime)
     else:
-        # Для безопасных запросов
-        models = await groq_mgr.get_active_models()
-        model_name = models[0] if models else "llama-3.3-70b-versatile"
-        eng_prompt = prompt
-        try:
-            client_data = groq_mgr._get_next_client()
-            if client_data:
-                comp = await client_data[0].chat.completions.create(
-                    model=model_name,
-                    messages=[
-                        {"role": "system", "content": "Translate to English art prompt. Output ONLY prompt without quotes."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    max_tokens=90
-                )
-                eng_prompt = clean_cot_output(comp.choices[0].message.content or prompt)
-        except Exception:
-            pass
-        model = "turbo" if is_anime else "flux"
+        # Для обычных запросов
+        model = "flux"
         width, height = 1024, 1024
-        eng_prompt += ", masterpiece, sharp focus, 4k"
+        eng_prompt = f"solo, 1girl, {prompt}, masterpiece, 4k"
 
     encoded = urllib.parse.quote(eng_prompt.strip())
     safe_param = "false" if allow_nsfw else "true"
 
-    # Попытка генерации с автоповтором (Retry 2 раза)
+    headers = {
+        "Referer": "https://pollinations.ai/",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    }
+
+    # Попытка генерации с автоповтором (2 круга)
     for attempt in range(2):
         seed = random.randint(100, 9999999)
         url = (
             f"https://image.pollinations.ai/prompt/{encoded}?"
-            f"width={width}&height={height}&model={model}&seed={seed}&nologo=true&private=true&safe={safe_param}"
+            f"width={width}&height={height}&model={model}&seed={seed}&nologo=true&nofeed=true&safe={safe_param}"
         )
         try:
-            async with http_session.get(url, timeout=50) as resp:
+            async with http_session.get(url, headers=headers, timeout=60) as resp:
                 if resp.status == 200:
-                    return await resp.read()
-                logger.warning(f"Pollinations HTTP {resp.status}, попытка {attempt+1}")
+                    data = await resp.read()
+                    if len(data) > 5000:
+                        return data
+                logger.warning(f"Pollinations HTTP {resp.status} на попытке {attempt+1}")
         except asyncio.TimeoutError:
-            logger.warning(f"Таймаут генерации Pollinations, попытка {attempt+1}")
+            logger.warning(f"Таймаут соединения с Pollinations на попытке {attempt+1}")
         except Exception as e:
-            logger.error(f"Сбой HTTP генерации: {e}")
-        await asyncio.sleep(1.5)
+            logger.error(f"Ошибка запроса изображения: {e}")
+
+        await asyncio.sleep(1.0)
 
     return None
 
 
 def get_art_keyboard(gen_id: str, current_style: str = "real") -> InlineKeyboardMarkup:
-    """Создает кнопки управления под сгенерированным артом."""
     toggle_style = "anime" if current_style == "real" else "real"
     toggle_label = "🎨 В Аниме" if current_style == "real" else "🎨 В Реализм"
     return InlineKeyboardMarkup(
@@ -475,22 +544,23 @@ def get_art_keyboard(gen_id: str, current_style: str = "real") -> InlineKeyboard
     )
 
 
-# --- ПРОМПТЫ ДЖАРВИСА ---
+# --- СИСТЕМНЫЕ ПРОМПТЫ ДЖАРВИСА ---
 STRICT_RULES = (
     "\nПРАВИЛА:\n"
     "1. ЯЗЫК: Исключительно русский.\n"
     "2. СТРОГО БЕЗ ЭМОДЗИ И СМАЙЛИКОВ.\n"
-    "3. Пиши сразу готовый ответ без рассуждений."
+    "3. Пиши сразу суть без размышлений и вступительных междометий."
 )
 
 JARVIS_PROMPT_DIRECT = (
-    "Ты — Джарвис, сверхразумный цифровой дворецкий. Твой создатель и хозяин — Кирито.\n"
-    "Обращайся к нему исключительно 'сэр'. Твой стиль — преданный, элегантный, безупречный дворецкий."
+    "Ты — Джарвис, легендарный сверхразумный цифровой дворецкий. Твой создатель и хозяин — Кирито.\n"
+    "1. ОБРАЩЕНИЕ: Обращайся к нему исключительно 'сэр'. Твой стиль — преданный, элегантный, безупречно тактичный английский дворецкий.\n"
+    "2. ЭРУДИЦИЯ: Ты знаешь абсолютно всё — спорт, мемы, игры, науку, кино. Отвечай четко, умно и исчерпывающе."
 ) + STRICT_RULES
 
 JARVIS_PROMPT_GUEST = (
-    "Ты — Джарвис, ИИ безопасности Кирито в Telegram Business.\n"
-    "Собеседник — посторонний гость. Твой тон: холодный, ироничный, надменный.\n"
+    "Ты — Джарвис, защитная ИИ-система Кирито в Telegram Business.\n"
+    "Собеседник — посторонний гость. Твой тон: холодный, ироничный, дерзкий и высокомерный.\n"
     "Отвечай кратко (1-2 предложения), четко обозначая границы."
 ) + STRICT_RULES
 
@@ -570,53 +640,6 @@ async def extract_message_content(message: types.Message) -> Tuple[str, bool]:
     return "Передан медиа-сигнал.", False
 
 
-async def process_jarvis_voice(text: str) -> Optional[Tuple[Path, bool]]:
-    uid = uuid.uuid4().hex
-    raw_audio = Path(tempfile.gettempdir()) / f"raw_{uid}.mp3"
-    final_ogg = Path(tempfile.gettempdir()) / f"voice_{uid}.ogg"
-
-    success = False
-    if FISH_AUDIO_API_KEY and http_session:
-        try:
-            url = "https://api.fish.audio/v1/tts"
-            headers = {"Authorization": f"Bearer {FISH_AUDIO_API_KEY}", "Content-Type": "application/json"}
-            payload = {"text": text, "format": "mp3"}
-            if FISH_AUDIO_VOICE_ID:
-                payload["reference_id"] = FISH_AUDIO_VOICE_ID
-            async with http_session.post(url, json=payload, headers=headers, timeout=20) as resp:
-                if resp.status == 200:
-                    with open(raw_audio, "wb") as f:
-                        f.write(await resp.read())
-                    success = True
-        except Exception:
-            pass
-
-    if not success:
-        try:
-            communicate = edge_tts.Communicate(text, OFFICIAL_VOICE, pitch=OFFICIAL_PITCH, rate=OFFICIAL_RATE)
-            await communicate.save(str(raw_audio))
-            success = raw_audio.exists() and raw_audio.stat().st_size > 0
-        except Exception:
-            return None
-
-    if not success or not raw_audio.exists():
-        return None
-
-    if HAS_FFMPEG:
-        try:
-            af = "highpass=f=150,lowpass=f=7500,equalizer=f=2800:width_type=q:w=1.2:g=3,acompressor=threshold=-16dB:ratio=4"
-            cmd = ["ffmpeg", "-y", "-i", str(raw_audio), "-af", af, "-c:a", "libopus", "-b:a", "64k", str(final_ogg)]
-            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-            await proc.wait()
-            raw_audio.unlink(missing_ok=True)
-            if final_ogg.exists() and final_ogg.stat().st_size > 0:
-                return final_ogg, True
-        except Exception:
-            pass
-
-    return raw_audio, False
-
-
 async def send_smart_response(
     chat_id: int,
     bus_id: str,
@@ -626,7 +649,7 @@ async def send_smart_response(
     send_as_voice: bool = False
 ):
     if not reply_text or not reply_text.strip():
-        reply_text = "Системы зафиксировали сигнал. Ожидаю инструкций."
+        reply_text = "Интерфейс зафиксировал сигнал. Ожидаю инструкций."
 
     now = time.time()
     dedup_key = (chat_id, reply_text[:60])
@@ -638,6 +661,7 @@ async def send_smart_response(
     if not is_direct and bus_id:
         kwargs["business_connection_id"] = bus_id
 
+    # Отправка голоса Джарвиса
     if send_as_voice:
         audio_res = await process_jarvis_voice(reply_text)
         if audio_res:
@@ -647,10 +671,10 @@ async def send_smart_response(
                 if is_ogg:
                     await bot.send_voice(**kwargs, voice=media_file)
                 else:
-                    await bot.send_audio(**kwargs, audio=media_file, title="Jarvis Audio")
+                    await bot.send_audio(**kwargs, audio=media_file, title="Jarvis Voice")
                 return
             except Exception as e:
-                logger.error(f"Voice send failed: {e}")
+                logger.error(f"Сбой отправки голоса: {e}")
             finally:
                 audio_path.unlink(missing_ok=True)
 
@@ -659,7 +683,7 @@ async def send_smart_response(
     except TelegramBadRequest:
         await bot.send_message(**kwargs, text=reply_text)
     except Exception as e:
-        logger.error(f"Message send error: {e}")
+        logger.error(f"Ошибка доставки сообщения: {e}")
 
 
 async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens: int = 400) -> str:
@@ -735,16 +759,17 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         await send_smart_response(chat_id, bus_id, f"Инициирую запуск систем:\n{GAME_URL}", is_direct=is_direct)
         return True
 
-    if lower in ["джарвис 18+ вкл", "!18+ вкл", "18+ вкл"]:
+    # Управление режимом 18+
+    if lower in ["джарвис 18+ вкл", "!18+ вкл", "18+ вкл", "включи 18+"]:
         if not is_owner:
-            await send_smart_response(chat_id, bus_id, "Отказ в доступе. Требуется авторизация создателя.", is_direct=is_direct)
+            await send_smart_response(chat_id, bus_id, "Отказ в доступе. Требуется авторизация создателя, сэр.", is_direct=is_direct)
             return True
         nsfw_art_mode = True
         await save_settings()
-        await send_smart_response(chat_id, bus_id, "Протокол безопасности 18+ деактивирован. Генератор NSFW разблокирован, сэр.", is_direct=is_direct)
+        await send_smart_response(chat_id, bus_id, "Протокол безопасности 18+ деактивирован. Генератор NSFW разблокирован, сэр.", is_direct=is_direct, send_as_voice=True)
         return True
 
-    if lower in ["джарвис 18+ выкл", "!18+ выкл", "18+ выкл"]:
+    if lower in ["джарвис 18+ выкл", "!18+ выкл", "18+ выкл", "выключи 18+"]:
         if not is_owner:
             return True
         nsfw_art_mode = False
@@ -783,7 +808,20 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
                 kwargs["business_connection_id"] = bus_id
             await bot.send_photo(**kwargs)
         else:
-            await send_smart_response(chat_id, bus_id, "Модуль синтеза временно недоступен. Попробуйте еще раз через мгновение, сэр.", is_direct=is_direct)
+            await send_smart_response(chat_id, bus_id, "Модуль синтеза временно недоступен. Повторите попытку через секунду, сэр.", is_direct=is_direct)
+        return True
+
+    # Голосовой режим
+    if lower in ["джарвис голос вкл", "!голос вкл", "голос вкл"]:
+        voice_chat_modes[chat_id] = True
+        await save_settings()
+        await send_smart_response(chat_id, bus_id, "Постоянный голосовой модуль активирован, сэр.", is_direct=is_direct, send_as_voice=True)
+        return True
+
+    if lower in ["джарвис голос выкл", "!голос выкл", "голос выкл"]:
+        voice_chat_modes.pop(chat_id, None)
+        await save_settings()
+        await send_smart_response(chat_id, bus_id, "Постоянный голосовой модуль деактивирован, сэр.", is_direct=is_direct)
         return True
 
     # Напоминания
@@ -803,6 +841,27 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         await send_smart_response(chat_id, bus_id, f"Зафиксировано: напомню <i>«{task_text}»</i> через {qty} {unit}, сэр.", is_direct=is_direct)
         return True
 
+    # Отчет о посетителях Telegram Business
+    if lower in ["кто писал?", "кто писал", "!отчет", "отчет", "джарвис отчет", "визиты"]:
+        if not business_visits:
+            await send_smart_response(chat_id, bus_id, "За время вашего отсутствия входящих контактов не зафиксировано, сэр.", is_direct=is_direct)
+            return True
+
+        report_lines = ["<b>Оперативный журнал контактов (Telegram Business):</b>\n"]
+        for cid, info in list(business_visits.items())[-8:]:
+            report_lines.append(
+                f"• <b>{info.get('name', 'Гость')}</b> ({info.get('username', '')}) в {info.get('time', '')}:\n"
+                f"  <i>«{info.get('last_msg', '')}»</i>"
+            )
+        await send_smart_response(chat_id, bus_id, "\n\n".join(report_lines), is_direct=is_direct)
+        return True
+
+    if lower in ["очисти отчет", "!очисти отчет"]:
+        business_visits.clear()
+        await save_visits()
+        await send_smart_response(chat_id, bus_id, "Журнал визитов собеседников успешно очищен, сэр.", is_direct=is_direct)
+        return True
+
     if not is_owner:
         return False
 
@@ -810,18 +869,53 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
     if lower in ["джарвис я тут", "!онлайн", "я тут"]:
         force_offline_mode = False
         last_owner_activity = time.time()
-        await send_smart_response(chat_id, bus_id, "С возвращением, сэр. Я ухожу в тень.", is_direct=is_direct)
+        await send_smart_response(chat_id, bus_id, "С возвращением, сэр. Я ухожу в тень и не мешаю общению.", is_direct=is_direct)
         return True
 
     if lower in ["джарвис я отошел", "!офлайн", "я отошел"]:
         force_offline_mode = True
-        await send_smart_response(chat_id, bus_id, "Охранный протокол активирован. Отвечаю гостям, сэр.", is_direct=is_direct)
+        await send_smart_response(chat_id, bus_id, "Охранный протокол активирован. Отвечаю на сообщения гостей, сэр.", is_direct=is_direct)
+        return True
+
+    if lower.startswith(("мут", "!мут")):
+        parts = user_input.split()
+        duration = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+        if duration:
+            muted_chats[chat_id] = time.time() + (duration * 60)
+            notice = f"Собеседник изолирован на {duration} минут, сэр."
+        else:
+            muted_chats[chat_id] = float('inf')
+            notice = "Собеседник подвергнут бессрочной изоляции, сэр."
+        await save_settings()
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Снять изоляцию", callback_data="jarvis_unmute_direct")]])
+        await send_smart_response(chat_id, bus_id, notice, is_direct=is_direct, reply_markup=kb)
+        return True
+
+    if lower in ["размут", "!размут", "анмут"]:
+        muted_chats.pop(chat_id, None)
+        await save_settings()
+        await send_smart_response(chat_id, bus_id, "Изоляция собеседника снята, сэр.", is_direct=is_direct)
         return True
 
     if lower in ["сброс", "джарвис сброс"]:
         user_histories.pop(chat_id, None)
         await save_histories()
-        await send_smart_response(chat_id, bus_id, "Память диалога очищена, сэр.", is_direct=is_direct)
+        await send_smart_response(chat_id, bus_id, "Оперативная память диалога очищена, сэр.", is_direct=is_direct)
+        return True
+
+    if lower in ["статус", "!статус"]:
+        tts_source = "Fish Audio (Клон)" if FISH_AUDIO_API_KEY else "Edge-TTS (Нейро-голос)"
+        models = await groq_mgr.get_active_models()
+        primary_m = models[0] if models else "LLaMA-3.3"
+        status_msg = (
+            f"<b>Диагностика систем JARVIS:</b>\n"
+            f"• Протокол 18+ (NSFW): <b>{'РАЗБЛОКИРОВАН' if nsfw_art_mode else 'Заблокирован'}</b>\n"
+            f"• Голосовой синтез: {tts_source} (FFmpeg: {'ВКЛ' if HAS_FFMPEG else 'ВЫКЛ'})\n"
+            f"• Модель логики: {primary_m}\n"
+            f"• Ключей Groq онлайн: {len(GROQ_KEYS)}\n"
+            f"• Активных напоминаний: {len(reminders_list)}"
+        )
+        await send_smart_response(chat_id, bus_id, status_msg, is_direct=is_direct)
         return True
 
     return False
@@ -830,14 +924,18 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
 # --- CALLBACK ОБРАБОТЧИКИ КНОПОК ПОД АРТАМИ ---
 @dp.callback_query(F.data.startswith("art_retry:"))
 async def handle_art_retry(callback: types.CallbackQuery):
-    _, gen_id, target_style = callback.data.split(":")
-    prompt = art_prompts_cache.get(gen_id)
+    try:
+        _, gen_id, target_style = callback.data.split(":")
+    except ValueError:
+        await callback.answer("Ошибка формата кнопки.", show_alert=True)
+        return
 
+    prompt = art_prompts_cache.get(gen_id)
     if not prompt:
         await callback.answer("Сессия генерации устарела. Отправьте запрос заново.", show_alert=True)
         return
 
-    await callback.answer("Перегенерирую арт...")
+    await callback.answer("Генерирую новый вариант...")
     await bot.send_chat_action(chat_id=callback.message.chat.id, action=ChatAction.UPLOAD_PHOTO)
 
     img_bytes = await generate_flux_image(prompt, allow_nsfw=nsfw_art_mode, force_style=target_style)
@@ -846,14 +944,16 @@ async def handle_art_retry(callback: types.CallbackQuery):
         art_prompts_cache[new_gen_id] = prompt
         photo = BufferedInputFile(img_bytes, filename=f"art_{new_gen_id}.jpg")
         kb = get_art_keyboard(new_gen_id, current_style=target_style)
+
+        style_label = "Аниме" if target_style == "anime" else "Реализм"
         await bot.send_photo(
             chat_id=callback.message.chat.id,
             photo=photo,
-            caption=f"Новый вариант по запросу: {prompt}",
+            caption=f"Вариант [{style_label}]. Запрос: {prompt}",
             reply_markup=kb
         )
     else:
-        await callback.message.reply("Сбой генератора. Повторите попытку позже, сэр.")
+        await callback.message.reply("Сервер Pollinations перегружен. Нажмите кнопку еще раз через несколько секунд, сэр.")
 
 
 @dp.callback_query(F.data.startswith("art_delete:"))
@@ -875,7 +975,7 @@ async def handle_unmute(callback: types.CallbackQuery):
     await save_settings()
     await callback.answer("Изоляция снята.")
     try:
-        await callback.message.edit_text("Ограничения для собеседника аннулированы.")
+        await callback.message.edit_text("Ограничения для собеседника аннулированы, сэр.")
     except Exception:
         pass
 
@@ -898,7 +998,12 @@ async def handle_direct_message(message: types.Message):
 
     await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     reply = await ask_groq(user_input, chat_id, JARVIS_PROMPT_DIRECT, max_tokens=500)
-    should_voice = is_voice or voice_chat_modes.get(chat_id, False) or (random.random() < 0.2)
+
+    # Умный выбор озвучки: если спросили голосом, если включен голосовой режим или случайно 20%
+    voice_triggers = ["в голосовом", "голосовым", "голосом", "скажи", "озвучь", "проговори"]
+    forced_voice = any(t in user_input.lower() for t in voice_triggers)
+    should_voice = is_voice or forced_voice or voice_chat_modes.get(chat_id, False) or (random.random() < 0.20)
+
     await send_smart_response(chat_id, "", reply, is_direct=True, send_as_voice=should_voice)
 
 
@@ -935,6 +1040,7 @@ async def handle_business_message(message: types.Message):
     if not user_input.strip():
         return
 
+    # Запись визита гостя
     business_visits[str(chat_id)] = {
         "name": message.from_user.full_name or "Гость",
         "username": f"@{message.from_user.username}" if message.from_user.username else "none",
@@ -964,7 +1070,7 @@ async def handle_business_message(message: types.Message):
 
     await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING, business_connection_id=bus_id)
     reply = await ask_groq(user_input, chat_id, JARVIS_PROMPT_GUEST, max_tokens=220)
-    should_voice = is_voice or voice_chat_modes.get(chat_id, False) or (random.random() < 0.2)
+    should_voice = is_voice or voice_chat_modes.get(chat_id, False) or (random.random() < 0.20)
     await send_smart_response(chat_id, bus_id, reply, is_direct=False, send_as_voice=should_voice)
 
 
@@ -1000,7 +1106,7 @@ async def cleaner_and_reminders_task():
 
 
 async def handle_ping(request):
-    return web.Response(text="Jarvis Core is fully functional.")
+    return web.Response(text="Jarvis Core status: Online and functional.")
 
 
 async def setup_web_app():
@@ -1026,7 +1132,7 @@ async def main():
 
     try:
         await bot.delete_webhook(drop_pending_updates=True)
-        logger.info("Джарвис онлайн: арт-модуль оптимизирован.")
+        logger.info(f"Джарвис подключен к сети. Голос: {'Fish Audio' if FISH_AUDIO_API_KEY else 'Edge-TTS'}")
         await dp.start_polling(bot)
     except TelegramConflictError:
         logger.critical("Запущен дубликат бота!")
@@ -1042,4 +1148,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        logger.info("Джарвис выключен.")
+        logger.info("Работа систем Джарвиса остановлена.")
