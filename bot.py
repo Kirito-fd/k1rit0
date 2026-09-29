@@ -815,7 +815,7 @@ async def enhance_image_prompt(user_prompt: str, allow_nsfw: bool = False) -> st
         "properly attached limbs, natural continuous body, fully connected body, high detailed skin"
     )
 
-    # 1. ОБХОД ЦЕНЗУРЫ: Для NSFW-запросов формируем промпт НАПРЯМУЮ в Python без обращения к Groq!
+    # ОБХОД ЦЕНЗУРЫ: Для NSFW-запросов формируем промпт НАПРЯМУЮ в Python без обращения к Groq!
     if allow_nsfw and is_nsfw:
         pose, angle, body, expression, clothing = resolve_anatomy_and_poses(user_prompt)
         is_anime = any(w in normalized_prompt for w in ["аниме", "хентай", "манга", "тян", "грехов", "элизабет", "2d"])
@@ -839,7 +839,7 @@ async def enhance_image_prompt(user_prompt: str, allow_nsfw: bool = False) -> st
                 f"{pose}, {angle}, {body}, {expression}, {clothing}, {anatomy_stabilizer}, natural skin texture, soft indoor lighting, 8k uhd"
             )
 
-    # 2. ДЛЯ ОБЫЧНЫХ ЗАПРОСОВ (не 18+): Используем Groq переводчик
+    # ДЛЯ ОБЫЧНЫХ ЗАПРОСОВ (не 18+): Используем Groq переводчик
     models = await groq_mgr.get_active_models()
     if models:
         sys_msg = (
@@ -922,7 +922,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
 
     public_commands = ["игра", "тапалка", "!игра", "!тапалка", "/game", "!джарвис игра"]
 
-    # --- УПРАВЛЕНИЕ ЗАЩИТОЙ 18+ (NSFW) ---
+    # УПРАВЛЕНИЕ ЗАЩИТОЙ 18+ (NSFW)
     nsfw_on_triggers = ["джарвис 18+ вкл", "!18+ вкл", "джарвис nsfw вкл", "!nsfw вкл", "18+ вкл", "nsfw вкл", "включи 18+", "!18+", "джарвис включи 18+"]
     nsfw_off_triggers = ["джарвис 18+ выкл", "!18+ выкл", "джарвис nsfw выкл", "!nsfw выкл", "18+ выкл", "nsfw выкл", "выключи 18+", "джарвис выключи 18+"]
 
@@ -944,7 +944,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         await send_smart_response(chat_id, bus_id, "Фильтр безопасности 18+ активирован. Генератор переведен в стандартный семейный режим, сэр.", is_direct=is_direct)
         return True
 
-    # --- ГЕНЕРАЦИЯ КАРТИНОК FLUX ---
+    # ГЕНЕРАЦИЯ КАРТИНОК FLUX
     draw_pattern = r"\b(нарисуй|сгенерируй|создай арт|нарисуйте|арт)\b"
     if re.search(draw_pattern, lower_text) or lower_text.startswith("!арт"):
         prompt = re.sub(r"\b(джарвис|пожалуйста|мне|нарисуй|сгенерируй|создай арт|нарисуйте|арт|!арт|!нарисуй)\b", "", user_input, flags=re.IGNORECASE).strip()
@@ -1065,7 +1065,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
     if lower_text in ["джарвис я тут", "!онлайн", "!я тут", "джарвис онлайн", "я тут", "джарвис тут"]:
         force_offline_mode = False
         last_owner_activity = time.time()
-        await send_smart_response(chat_id, bus_id, "Принято, сэр. Вы в сети — я уходим в тень и не мешаю диалогам.", is_direct=is_direct)
+        await send_smart_response(chat_id, bus_id, "Принято, сэр. Вы в сети — я ухожу в тень и не мешаю диалогам.", is_direct=is_direct)
         return True
 
     if lower_text in ["джарвис я отошел", "!офлайн", "!оффлайн", "!отошел", "джарвис офлайн", "джарвис оффлайн"]:
