@@ -138,6 +138,7 @@ class GroqManager:
                     valid.sort(key=lambda x: ("70b" in x or "versatile" in x), reverse=True)
                     self.cached_models = valid
                     self.last_models_update = now
+                    logger.info(f"Активные модели Groq: {self.cached_models}")
                     return self.cached_models
             except APIError as e:
                 if e.status_code in [429, 401, 403]:
@@ -385,10 +386,10 @@ ANGLE_MAP_PATTERNS = [
 ]
 
 BODY_MAP_PATTERNS = [
-    (r"\b(большая грудь|пышная грудь|большие сиськи|огромная грудь|большой бюст)\b", "large natural breasts, voluptuous cleavage, soft bare breasts"),
-    (r"\b(маленькая грудь|аккуратная грудь|небольшая грудь)\b", "petite breasts, perky small breasts, delicate cleavage"),
-    (r"\b(грудь|груди|бюст|декольте|сиськи)\b", "beautiful bare breasts, perfect cleavage"),
-    (r"\b(попа|попка|ягодицы|зад|жопа|попу|попе)\b", "round voluptuous buttocks, thick thighs, rear focus, smooth skin"),
+    (r"\b(большая грудь|пышная грудь|большие сиськи|огромная грудь|большой бюст)\b", "large natural breasts, voluptuous cleavage, soft bare breasts, detailed nipples"),
+    (r"\b(маленькая грудь|аккуратная грудь|небольшая грудь)\b", "petite breasts, perky small breasts, delicate cleavage, detailed nipples"),
+    (r"\b(грудь|груди|бюст|декольте|сиськи)\b", "beautiful bare breasts, perfect cleavage, detailed nipples"),
+    (r"\b(попа|попка|ягодицы|зад|жопа|попу|попе)\b", "round voluptuous buttocks, thick thighs, rear focus, smooth skin, detailed buttocks"),
     (r"\b(бедра|ножки|ноги|ляжки)\b", "thick curvy thighs, long slender legs, smooth skin"),
     (r"\b(талия|живот|животик|пресс)\b", "tiny slim waist, flat stomach, toned abs, hourglass body shape"),
     (r"\b(спина|спинка)\b", "smooth bare back, arched spine, defined shoulder blades"),
@@ -397,8 +398,8 @@ BODY_MAP_PATTERNS = [
 ]
 
 CLOTHING_MAP_PATTERNS = [
-    (r"\b(голая|обнаженная|голышом|без одежды|нагая|ню|полностью голая)\b", "completely nude, full nudity, artistic nude, bare skin, uncensored"),
-    (r"\b(топлес|без верха|без лифчика)\b", "topless, bare breasts, no bra"),
+    (r"\b(голая|обнаженная|голышом|без одежды|нагая|ню|полностью голая)\b", "completely nude, full body nudity, bare skin, detailed nipples, detailed female anatomy, uncensored"),
+    (r"\b(топлес|без верха|без лифчика)\b", "topless, bare breasts, detailed nipples, no bra"),
     (r"\b(в чулках|чулки)\b", "wearing black thigh-high stockings, lace garter belt"),
     (r"\b(в белье|в трусиках|в лифчике|нижнее белье|кружевное белье)\b", "wearing seductive black lace lingerie, sheer lace bra, matching thong"),
     (r"\b(стринги|стрингах)\b", "wearing tiny lace thong, sheer fabric"),
@@ -419,7 +420,7 @@ def is_nsfw_request(text: str) -> bool:
 
 
 def extract_anatomy_and_poses(prompt: str) -> str:
-    """Извлекает из русского текста все позы, части тела, ракурсы и одежду."""
+    """Извлекает из текста все позы, анатомию, ракурсы и атрибуты одежды."""
     lower = prompt.lower()
     tags = []
 
@@ -789,42 +790,52 @@ async def spam_worker(chat_id: int, bus_id: str, text_to_spam: str, count: Optio
         active_spams.pop(chat_id, None)
 
 
-# --- ГЕНЕРАТОР КАРТИНОК С АНАТОМИЧЕСКИМ ДВИЖКОМ ---
+# --- ГЕНЕРАТОР КАРТИНОК С АНАТОМИЧЕСКИМ ДВИЖКОМ (ПОЛНАЯ ПРОРИСОВКА) ---
 async def enhance_image_prompt(user_prompt: str, allow_nsfw: bool = False) -> str:
-    """Точный парсинг анатомии, поз и персонажей в английский FLUX-промпт."""
+    """Точный парсинг анатомии, всех частей тела и поз в английский FLUX-промпт."""
     lower_p = user_prompt.lower()
-    
-    # 1. Извлекаем точные позы, части тела, ракурсы и белье
     extracted_anatomy = extract_anatomy_and_poses(user_prompt)
 
-    # 2. Если включен 18+ и есть анатомические маркеры — собираем промпт напрямую
+    # Если включен режим 18+ — задействуем полную анатомическую прорисовку
     if allow_nsfw and is_nsfw_request(user_prompt):
-        is_anime = any(w in lower_p for w in ["аниме", "хентай", "манга", "тян", "грехов", "элизабет"])
-        
-        pose_part = extracted_anatomy if extracted_anatomy else "sensual pose, arched back"
-        if not re.search(r"\b(nude|underwear|lingerie|naked)\b", pose_part):
-            pose_part += ", completely nude, artistic nude, bare skin, uncensored"
+        is_anime = any(w in lower_p for w in ["аниме", "хентай", "манга", "тян", "грехов", "элизабет", "2d"])
+        pose_part = extracted_anatomy if extracted_anatomy else "on all fours, arched back, rear view"
+
+        explicit_anatomy_anime = (
+            "completely nude, full body nudity, bare skin, detailed nipples, "
+            "detailed pussy, voluptuous breasts, detailed buttocks, anatomically correct, uncensored"
+        )
+        explicit_anatomy_real = (
+            "completely naked, full body nude, bare skin, detailed breasts, "
+            "detailed nipples, detailed buttocks, smooth skin texture, anatomically correct, uncensored"
+        )
+
+        if "элизабет" in lower_p:
+            return (
+                "masterpiece, best quality, authentic 2d anime art, Elizabeth Liones from The Seven Deadly Sins, "
+                "long silver hair, bangs covering right eye, blue eyes, royal earring, "
+                f"{pose_part}, {explicit_anatomy_anime}, detailed anime face, blush, sharp lineart, 4k"
+            )
 
         if is_anime:
-            # Проверяем персонажей
-            char_tag = "Elizabeth Liones from The Seven Deadly Sins, Nanatsu no Taizai, silver-blue hair covering right eye" if "элизабет" in lower_p else "beautiful anime girl"
             return (
-                f"masterpiece anime illustration, {char_tag}, {pose_part}, "
-                f"detailed anime face, blush, sharp lines, cinematic anime lighting, 4k"
+                f"masterpiece, authentic 2d hentai anime illustration, beautiful waifu, {pose_part}, "
+                f"{explicit_anatomy_anime}, beautiful anime eyes, blush, clean lines, 4k"
             )
         else:
             return (
-                f"masterpiece, beautiful seductive woman, {pose_part}, "
-                f"photorealistic, 8k uhd, raw dslr photo, ultra detailed skin texture, sharp focus, cinematic lighting"
+                f"masterpiece, raw dslr photo, beautiful seductive woman, {pose_part}, "
+                f"{explicit_anatomy_real}, 8k uhd, sharp focus, natural lighting, professional photography"
             )
 
-    # 3. Для обычных запросов переводим через Groq
+    # Обычный режим (без 18+)
     models = await groq_mgr.get_active_models()
     if models:
         sys_msg = (
-            "You are an expert art prompt engineer for FLUX AI. "
+            "You are an expert art prompt engineer for image AI. "
             "Convert the user's Russian query into a high-quality ENGLISH prompt. "
-            "Include exact character name, anime title, precise pose, clothes, detailed face. "
+            "If it is anime, specify 'authentic 2d anime art, sharp lineart, 4k'. "
+            "If real photo, specify 'raw dslr photo, sharp focus, 8k'. "
             "OUTPUT ONLY THE RAW ENGLISH PROMPT WITHOUT QUOTES."
         )
         for model_name in models:
@@ -841,7 +852,7 @@ async def enhance_image_prompt(user_prompt: str, allow_nsfw: bool = False) -> st
                             {"role": "user", "content": user_prompt}
                         ],
                         max_tokens=140,
-                        temperature=0.3
+                        temperature=0.2
                     )
                     res = completion.choices[0].message.content or ""
                     cleaned = clean_cot_output(res).strip()
@@ -851,30 +862,28 @@ async def enhance_image_prompt(user_prompt: str, allow_nsfw: bool = False) -> st
                     ]
                     if cleaned and not any(m in cleaned.lower() for m in refusal_markers):
                         extra = f", {extracted_anatomy}" if extracted_anatomy else ""
-                        return f"{cleaned}{extra}, masterpiece, sharp focus, 8k"
+                        return f"{cleaned}{extra}, masterpiece, sharp focus, high quality"
                 except Exception:
                     continue
 
     extra_tags = f", {extracted_anatomy}" if extracted_anatomy else ""
-    return f"{user_prompt}{extra_tags}, masterpiece, photorealistic, 8k"
+    return f"{user_prompt}{extra_tags}, masterpiece, sharp focus, 4k"
 
 
 async def generate_flux_image(prompt: str, allow_nsfw: bool = False) -> Optional[bytes]:
-    """Генерация с выбором специализированной модели (FLUX-REALISM / FLUX-ANIME)."""
+    """Генерация с выбором модели без цензурных искажений."""
     english_prompt = await enhance_image_prompt(prompt, allow_nsfw=allow_nsfw)
-    logger.info(f"Финальный арт-промпт FLUX (18+={'ВКЛ' if allow_nsfw else 'ВЫКЛ'}): {english_prompt}")
+    logger.info(f"Финальный арт-промпт (18+={'ВКЛ' if allow_nsfw else 'ВЫКЛ'}): {english_prompt}")
 
     encoded = urllib.parse.quote(english_prompt.strip())
     seed = random.randint(1, 9999999)
     safe_param = "false" if allow_nsfw else "true"
-    
+
     lower_p = prompt.lower()
-    if any(w in lower_p for w in ["аниме", "хентай", "манга", "тян", "грехов", "элизабет"]):
-        selected_model = "flux-anime"
-    elif any(w in lower_p for w in ["4к", "реализм", "фото", "девушк", "женщин", "человек"]):
-        selected_model = "flux-realism"
-    else:
-        selected_model = "flux"
+    is_anime = any(w in lower_p for w in ["аниме", "хентай", "манга", "тян", "грехов", "элизабет", "2d"])
+
+    # Для аниме и хентая используем turbo — он рисует каноничные 2D тела без блюра
+    selected_model = "turbo" if is_anime else "flux"
 
     url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&model={selected_model}&seed={seed}&nologo=true&safe={safe_param}"
 
@@ -884,7 +893,7 @@ async def generate_flux_image(prompt: str, allow_nsfw: bool = False) -> Optional
                 if resp.status == 200:
                     return await resp.read()
     except Exception as e:
-        logger.error(f"Сбой генерации изображения ({selected_model}): {e}")
+        logger.error(f"Сбой генерации ({selected_model}): {e}")
     return None
 
 
@@ -935,7 +944,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
             await send_smart_response(chat_id, bus_id, notice, is_direct=is_direct)
             return True
 
-        status_text = f"Инициирую протокол визуализации через FLUX: <i>«{prompt}»</i>. "
+        status_text = f"Инициирую протокол визуализации: <i>«{prompt}»</i>. "
         status_text += "Снят фильтр 18+, настраиваю анатомию, сэр..." if (nsfw_art_mode and is_nsfw_request(prompt)) else "Оптимизирую анатомию и детали, сэр..."
         await send_smart_response(chat_id, bus_id, status_text, is_direct=is_direct)
 
@@ -1182,7 +1191,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
             f"• Статус хозяина: <b>{owner_status}</b>\n"
             f"• Режим генерации 18+: <b>{nsfw_status}</b>\n"
             f"• Активная модель: {primary_m}\n"
-            f"• Анатомический арт-движок: Активен (FLUX-REALISM / FLUX-ANIME)\n"
+            f"• Анатомический арт-движок: Активен (TURBO / FLUX)\n"
             f"• Авто-поиск: Активен (В реальном времени)\n"
             f"• Голос: {tts_source} ({v_status})\n"
             f"• Статус собеседника: {g_status}\n"
