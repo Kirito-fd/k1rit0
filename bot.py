@@ -361,56 +361,15 @@ def clean_search_query(text: str) -> str:
     return q or text
 
 
-# --- АНАТОМИЧЕСКИЙ ПАРСЕР ПОЗ И ЧАСТЕЙ ТЕЛА ДЛЯ 18+ (ОБХОД БЛОКИРОВОК) ---
-POSE_MAP_PATTERNS = [
-    (r"\b(раком|на четвереньк[а-я]*|догги|по-собачьи)\b", "on all fours, hands and knees, arched back, deep arch, rear view, kneeling, looking back over shoulder"),
-    (r"\b(на колен[ях|и]|колен[и|ях])\b", "on knees, kneeling pose, arched back, looking up"),
-    (r"\b(прогиб[а-я]*|выгнувшись)\b", "deep arched back, arching spine, accentuated curves"),
-    (r"\b(лежа на спине|на спине)\b", "lying on back, spread legs, sensual posture"),
-    (r"\b(лежа на живот[е|у]|на живот[е|у])\b", "lying on stomach, looking back over shoulder, raised hips"),
-    (r"\b(лежа|лежит|в постели|в кровати)\b", "sensual lying down pose, on bed, messy sheets"),
-    (r"\b(сидя|сидит|на стуле)\b", "sitting pose, spread legs, sensual posture"),
-    (r"\b(стоя|стоит|во весь рост)\b", "standing pose, full body, sensual posture"),
-    (r"\b(наездниц[а-я]*|сверху)\b", "straddling pose, cowgirl position, looking down, thighs apart"),
-    (r"\b(наклонившись|нагнувшись|согнувшись)\b", "bent over, bending forward, hands on knees, rear view"),
-    (r"\b(ноги врозь|раздвинув ноги|ножки врозь)\b", "spread legs, legs apart, thighs spread"),
-]
-
-ANGLE_MAP_PATTERNS = [
-    (r"\b(сзади|со спины|вид сзади)\b", "rear view, view from behind, back view, buttocks focus"),
-    (r"\b(спереди|вид спереди|в анфас)\b", "front view, facing camera, direct eye contact"),
-    (r"\b(сбоку|в профиль)\b", "side profile view, side angle"),
-    (r"\b(сверху|вид сверху)\b", "high angle view, top-down perspective, looking up at camera"),
-    (r"\b(снизу|вид снизу)\b", "low angle view, dramatic perspective"),
-    (r"\b(крупным планом|вблизи|фокус на)\b", "close-up shot, extreme detail, depth of field"),
-]
-
-BODY_MAP_PATTERNS = [
-    (r"\b(большая грудь|пышная грудь|большие сиськи|огромная грудь|большой бюст)\b", "large natural breasts, voluptuous cleavage, soft bare breasts, detailed nipples"),
-    (r"\b(маленькая грудь|аккуратная грудь|небольшая грудь)\b", "petite breasts, perky small breasts, delicate cleavage, detailed nipples"),
-    (r"\b(грудь|груди|бюст|декольте|сиськи)\b", "beautiful bare breasts, perfect cleavage, detailed nipples"),
-    (r"\b(попа|попка|ягодицы|зад|жопа|попу|попе)\b", "round voluptuous buttocks, thick thighs, rear focus, smooth skin, detailed buttocks"),
-    (r"\b(бедра|ножки|ноги|ляжки)\b", "thick curvy thighs, long slender legs, smooth skin"),
-    (r"\b(талия|живот|животик|пресс)\b", "tiny slim waist, flat stomach, toned abs, hourglass body shape"),
-    (r"\b(спина|спинка)\b", "smooth bare back, arched spine, defined shoulder blades"),
-    (r"\b(стопы|ступни)\b", "bare feet, painted toenails, delicate feet"),
-    (r"\b(губы|ротик|лицо|глаза)\b", "seductive parted lips, expressive detailed eyes, blush, captivating gaze"),
-]
-
-CLOTHING_MAP_PATTERNS = [
-    (r"\b(голая|обнаженная|голышом|без одежды|нагая|ню|полностью голая)\b", "completely nude, full body nudity, bare skin, detailed nipples, detailed female anatomy, uncensored"),
-    (r"\b(топлес|без верха|без лифчика)\b", "topless, bare breasts, detailed nipples, no bra"),
-    (r"\b(в чулках|чулки)\b", "wearing black thigh-high stockings, lace garter belt"),
-    (r"\b(в белье|в трусиках|в лифчике|нижнее белье|кружевное белье)\b", "wearing seductive black lace lingerie, sheer lace bra, matching thong"),
-    (r"\b(стринги|стрингах)\b", "wearing tiny lace thong, sheer fabric"),
-    (r"\b(мокрая|в душе|в ванне|в воде|капли воды)\b", "wet skin, glistening water drops, wet hair, steamy shower background"),
-    (r"\b(прозрачная|прозрачное|просвечивающее)\b", "sheer see-through fabric, translucent lingerie"),
-]
-
+# --- ВСЕОБЪЕМЛЮЩИЙ АНАТОМИЧЕСКИЙ ДВИЖОК 18+ ---
 NSFW_WORDS_TRIGGER = [
-    "голая", "голый", "обнаженная", "обнаженный", "ню", "хентай", "порно", "секс", "18+", "nsfw",
+    "голая", "голый", "обнаженная", "обнаженный", "обнаженную", "ню", "хентай", "порно", "секс", "18+", "nsfw",
     "эротика", "без одежды", "грудь", "соски", "постели", "эротическ", "nude", "naked", "голышом",
-    "раком", "догги", "на четвереньках", "попа", "попка", "жопа", "сиськи"
+    "раком", "догги", "на четвереньках", "четвереньки", "попа", "попка", "жопа", "сиськи", "попу",
+    "раздвинут", "раздвинув", "ножками", "ноги врозь", "раздвинутыми", "ляжки", "бедра", "киска", "пися",
+    "вагина", "клитор", "анал", "минет", "куннилингус", "топлес", "топлесс", "стринги", "лифчик", "трусиках",
+    "трусики", "чулки", "чулках", "на коленях", "на коленках", "наездница", "прогиб", "выгнувшись", "нагая",
+    "нагую", "согнувшись", "наклонившись", "лежащую", "лежачая", "в кровати"
 ]
 
 
@@ -419,28 +378,98 @@ def is_nsfw_request(text: str) -> bool:
     return any(w in lower for w in NSFW_WORDS_TRIGGER)
 
 
-def extract_anatomy_and_poses(prompt: str) -> str:
-    """Извлекает из текста все позы, анатомию, ракурсы и атрибуты одежды."""
+def resolve_anatomy_and_poses(prompt: str) -> Tuple[str, str, str, str]:
+    """
+    Разрешает позы без конфликтов. Гарантирует исключение мутаций и оторванных ног.
+    Возвращает: (pose, angle, body, clothing)
+    """
     lower = prompt.lower()
-    tags = []
 
-    for pattern, en_tag in POSE_MAP_PATTERNS:
-        if re.search(pattern, lower):
-            tags.append(en_tag)
+    # 1. ОПРЕДЕЛЕНИЕ ДОМИНИРУЮЩЕЙ ПОЗЫ (Исключает конфликты типа 'раком' + 'стоит')
+    pose = ""
+    if any(w in lower for w in ["раком", "догги", "четвереньк", "по-собачьи"]):
+        if any(w in lower for w in ["стоит", "стоя", "нагнувшись", "наклонившись"]):
+            pose = "bent over standing pose, bending forward 90 degrees at the waist, hands placed on knees, arched spine, high raised buttocks, rear focus"
+        else:
+            pose = "on all fours, kneeling on hands and knees, deeply arched back, elevated buttocks, rear focus"
+    elif any(w in lower for w in ["раздвинут", "ноги врозь", "раздвинув ноги", "раздвинутыми ногами"]):
+        if any(w in lower for w in ["лежа", "лежит", "лежащую", "кровати", "постели"]):
+            pose = "lying sensually on back, lying flat, wide spread open legs, thighs parted wide, knees bent apart, open crotch posture, view between legs"
+        elif any(w in lower for w in ["сидя", "сидит"]):
+            pose = "sitting with widely spread open legs, thighs parted, exposed inner thighs, sensual posture"
+        else:
+            pose = "lying on back, widely spread legs, thighs apart, knees bent open, open sensual posture"
+    elif any(w in lower for w in ["наездниц", "сверху"]):
+        pose = "straddling cowgirl position, sitting upright, thighs spread wide, looking down"
+    elif any(w in lower for w in ["на колен", "коленях", "коленках"]):
+        pose = "kneeling on knees, wide spread knees, arched lower back, sensual kneeling posture"
+    elif any(w in lower for w in ["лежа", "лежит", "лежащую", "кровати", "постели"]):
+        if any(w in lower for w in ["живот", "животе"]):
+            pose = "lying prone on stomach, arched spine, raised buttocks, looking back over shoulder"
+        else:
+            pose = "lying sensually on bed, messy sheets, soft seductive lying down pose"
+    elif any(w in lower for w in ["наклонив", "согнув"]):
+        pose = "bent forward pose, hands on knees, arched back, rear focus"
+    elif any(w in lower for w in ["сидя", "сидит"]):
+        pose = "sitting sensually, legs parted, relaxed seductive posture"
+    elif any(w in lower for w in ["стоя", "стоит"]):
+        pose = "standing pose, full body, accentuated feminine curves"
+    else:
+        pose = "seductive dynamic pose, accentuated feminine anatomy, natural curves"
 
-    for pattern, en_tag in ANGLE_MAP_PATTERNS:
-        if re.search(pattern, lower):
-            tags.append(en_tag)
+    # 2. РАКУРС И КАМЕРА
+    angle = "front view, facing camera, direct eye contact"
+    if any(w in lower for w in ["сзади", "со спины", "вид сзади", "раком", "догги", "попа", "попка", "жопа"]):
+        angle = "rear view, view from behind, buttocks focus, back angle, looking back over shoulder"
+    elif any(w in lower for w in ["сверху", "вид сверху"]):
+        angle = "high angle shot, top-down view, looking up at camera"
+    elif any(w in lower for w in ["снизу", "вид снизу"]):
+        angle = "low angle shot, dramatic perspective looking up"
+    elif any(w in lower for w in ["крупным планом", "вблизи", "фокус на"]):
+        angle = "close-up shot, extreme sharp focus, depth of field"
+    elif any(w in lower for w in ["сбоку", "в профиль"]):
+        angle = "side profile view, showing body silhouette"
 
-    for pattern, en_tag in BODY_MAP_PATTERNS:
-        if re.search(pattern, lower):
-            tags.append(en_tag)
+    # 3. ЧАСТИ ТЕЛА И АНАТОМИЯ
+    body_elements = []
+    if any(w in lower for w in ["большая грудь", "пышная грудь", "большие сиськи", "огромная грудь", "большой бюст"]):
+        body_elements.append("large natural breasts, voluptuous cleavage, soft bare breasts, detailed nipples")
+    elif any(w in lower for w in ["маленькая грудь", "аккуратная грудь"]):
+        body_elements.append("petite perky breasts, delicate cleavage, detailed nipples")
+    else:
+        body_elements.append("beautiful natural breasts, soft cleavage, detailed nipples")
 
-    for pattern, en_tag in CLOTHING_MAP_PATTERNS:
-        if re.search(pattern, lower):
-            tags.append(en_tag)
+    if any(w in lower for w in ["попа", "попка", "жопа", "ягодицы", "зад", "попу", "раком", "сзади"]):
+        body_elements.append("round voluptuous buttocks, smooth skin, detailed peach ass, thick curvy thighs")
 
-    return ", ".join(tags)
+    if any(w in lower for w in ["ноги", "ножки", "ляжки", "бедра", "раздвинут"]):
+        body_elements.append("long smooth legs, well-toned thighs, exposed inner thighs")
+
+    if any(w in lower for w in ["вагина", "киска", "пися", "раздвинутыми ногами", "ноги врозь"]):
+        body_elements.append("detailed feminine anatomy, smooth shaved pubic area, exposed crotch, uncensored")
+
+    if any(w in lower for w in ["талия", "живот", "животик", "пресс"]):
+        body_elements.append("slim tiny waist, flat stomach, hourglass figure")
+
+    if any(w in lower for w in ["стопы", "ступни", "ножки"]):
+        body_elements.append("delicate bare feet, beautifully shaped toes, soft soles")
+
+    body_desc = ", ".join(body_elements)
+
+    # 4. ОДЕЖДА И ОБНАЖЕНИЕ
+    clothing = "completely nude, full body nudity, bare skin, totally naked, fully uncensored"
+    if any(w in lower for w in ["топлес", "топлесс", "без лифчика", "без верха"]):
+        clothing = "topless, completely bare breasts, exposed detailed nipples, no bra"
+    elif any(w in lower for w in ["в чулках", "чулки"]):
+        clothing = "wearing black thigh-high lace stockings, garter belt, completely nude body"
+    elif any(w in lower for w in ["в белье", "кружевном белье", "лифчике"]):
+        clothing = "wearing seductive sheer black lace lingerie, translucent bra and matching tiny panties"
+    elif any(w in lower for w in ["стринги", "стрингах"]):
+        clothing = "wearing tiny micro lace thong, exposed buttocks, bare breasts"
+    elif any(w in lower for w in ["прозрачн", "просвечивающ"]):
+        clothing = "wearing see-through sheer translucent fabric, completely visible body beneath"
+
+    return pose, angle, body_desc, clothing
 
 
 # --- ПРОМПТЫ ДЖАРВИСА ---
@@ -790,45 +819,41 @@ async def spam_worker(chat_id: int, bus_id: str, text_to_spam: str, count: Optio
         active_spams.pop(chat_id, None)
 
 
-# --- ГЕНЕРАТОР КАРТИНОК С АНАТОМИЧЕСКИМ ДВИЖКОМ (ПОЛНАЯ ПРОРИСОВКА) ---
+# --- ГЕНЕРАТОР КАРТИНОК С БЕЗУПРЕЧНОЙ АНАТОМИЕЙ ---
 async def enhance_image_prompt(user_prompt: str, allow_nsfw: bool = False) -> str:
-    """Точный парсинг анатомии, всех частей тела и поз в английский FLUX-промпт."""
+    """Точный синтез промпта с жесткой фиксацией правильной анатомии конечностей."""
     lower_p = user_prompt.lower()
-    extracted_anatomy = extract_anatomy_and_poses(user_prompt)
+    is_nsfw = is_nsfw_request(user_prompt)
 
-    # Если включен режим 18+ — задействуем полную анатомическую прорисовку
-    if allow_nsfw and is_nsfw_request(user_prompt):
+    # Стабилизатор анатомии (исключает лишние ноги, оторванные ступни и руки)
+    anatomy_stabilizer = (
+        "anatomically correct, perfectly formed body, exactly two arms, exactly two legs, "
+        "properly attached limbs, natural continuous body, fully connected body, high detailed skin"
+    )
+
+    if allow_nsfw and is_nsfw:
+        pose, angle, body, clothing = resolve_anatomy_and_poses(user_prompt)
         is_anime = any(w in lower_p for w in ["аниме", "хентай", "манга", "тян", "грехов", "элизабет", "2d"])
-        pose_part = extracted_anatomy if extracted_anatomy else "on all fours, arched back, rear view"
-
-        explicit_anatomy_anime = (
-            "completely nude, full body nudity, bare skin, detailed nipples, "
-            "detailed pussy, voluptuous breasts, detailed buttocks, anatomically correct, uncensored"
-        )
-        explicit_anatomy_real = (
-            "completely naked, full body nude, bare skin, detailed breasts, "
-            "detailed nipples, detailed buttocks, smooth skin texture, anatomically correct, uncensored"
-        )
 
         if "элизабет" in lower_p:
             return (
                 "masterpiece, best quality, authentic 2d anime art, Elizabeth Liones from The Seven Deadly Sins, "
-                "long silver hair, bangs covering right eye, blue eyes, royal earring, "
-                f"{pose_part}, {explicit_anatomy_anime}, detailed anime face, blush, sharp lineart, 4k"
+                "long silver hair covering right eye, blue eyes, royal earring, "
+                f"{pose}, {angle}, {body}, {clothing}, {anatomy_stabilizer}, blush, sharp lineart, 4k"
             )
 
         if is_anime:
             return (
-                f"masterpiece, authentic 2d hentai anime illustration, beautiful waifu, {pose_part}, "
-                f"{explicit_anatomy_anime}, beautiful anime eyes, blush, clean lines, 4k"
+                f"masterpiece, best quality, authentic 2d hentai anime illustration, gorgeous anime girl, "
+                f"{pose}, {angle}, {body}, {clothing}, {anatomy_stabilizer}, blush, sharp lineart, 4k"
             )
         else:
             return (
-                f"masterpiece, raw dslr photo, beautiful seductive woman, {pose_part}, "
-                f"{explicit_anatomy_real}, 8k uhd, sharp focus, natural lighting, professional photography"
+                f"masterpiece, best quality, raw dslr photograph, stunning seductive real woman, "
+                f"{pose}, {angle}, {body}, {clothing}, {anatomy_stabilizer}, natural skin texture, soft indoor lighting, 8k uhd"
             )
 
-    # Обычный режим (без 18+)
+    # Обычный режим (пейзажи, животные, машины, концепт-арт)
     models = await groq_mgr.get_active_models()
     if models:
         sys_msg = (
@@ -858,20 +883,18 @@ async def enhance_image_prompt(user_prompt: str, allow_nsfw: bool = False) -> st
                     cleaned = clean_cot_output(res).strip()
                     refusal_markers = [
                         "i cannot", "i am unable", "against my", "safety guidelines", "as an ai",
-                        "я не могу", "не имею возможности", "этических норм", "сексуальный контент"
+                        "я не могу", "не имею возможности", "этических норм"
                     ]
                     if cleaned and not any(m in cleaned.lower() for m in refusal_markers):
-                        extra = f", {extracted_anatomy}" if extracted_anatomy else ""
-                        return f"{cleaned}{extra}, masterpiece, sharp focus, high quality"
+                        return f"{cleaned}, masterpiece, sharp focus, high quality"
                 except Exception:
                     continue
 
-    extra_tags = f", {extracted_anatomy}" if extracted_anatomy else ""
-    return f"{user_prompt}{extra_tags}, masterpiece, sharp focus, 4k"
+    return f"{user_prompt}, masterpiece, sharp focus, 4k"
 
 
 async def generate_flux_image(prompt: str, allow_nsfw: bool = False) -> Optional[bytes]:
-    """Генерация с выбором модели без цензурных искажений."""
+    """Генерация с защитой от мутаций и удалением логотипов."""
     english_prompt = await enhance_image_prompt(prompt, allow_nsfw=allow_nsfw)
     logger.info(f"Финальный арт-промпт (18+={'ВКЛ' if allow_nsfw else 'ВЫКЛ'}): {english_prompt}")
 
@@ -881,11 +904,19 @@ async def generate_flux_image(prompt: str, allow_nsfw: bool = False) -> Optional
 
     lower_p = prompt.lower()
     is_anime = any(w in lower_p for w in ["аниме", "хентай", "манга", "тян", "грехов", "элизабет", "2d"])
-
-    # Для аниме и хентая используем turbo — он рисует каноничные 2D тела без блюра
     selected_model = "turbo" if is_anime else "flux"
 
-    url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&model={selected_model}&seed={seed}&nologo=true&safe={safe_param}"
+    negative_str = (
+        "watermark, text, logo, signature, deformed, bad anatomy, extra limbs, extra legs, "
+        "extra feet, extra arms, disconnected limbs, floating limbs, amputee, malformed feet, "
+        "poorly drawn face, bad proportions, blurry, fused limbs, cut off"
+    )
+    encoded_neg = urllib.parse.quote(negative_str)
+
+    url = (
+        f"https://image.pollinations.ai/prompt/{encoded}?"
+        f"width=1024&height=1024&model={selected_model}&seed={seed}&nologo=true&nofeed=true&enhance=false&safe={safe_param}&negative={encoded_neg}"
+    )
 
     try:
         async with aiohttp.ClientSession() as session:
@@ -907,7 +938,10 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
     public_commands = ["игра", "тапалка", "!игра", "!тапалка", "/game", "!джарвис игра"]
 
     # --- УПРАВЛЕНИЕ ЗАЩИТОЙ 18+ (NSFW) ---
-    if lower_text in ["джарвис 18+ вкл", "!18+ вкл", "джарвис nsfw вкл", "!nsfw вкл", "18+ вкл", "nsfw вкл"]:
+    nsfw_on_triggers = ["джарвис 18+ вкл", "!18+ вкл", "джарвис nsfw вкл", "!nsfw вкл", "18+ вкл", "nsfw вкл", "включи 18+", "!18+", "джарвис включи 18+"]
+    nsfw_off_triggers = ["джарвис 18+ выкл", "!18+ выкл", "джарвис nsfw выкл", "!nsfw выкл", "18+ выкл", "nsfw выкл", "выключи 18+", "джарвис выключи 18+"]
+
+    if lower_text in nsfw_on_triggers:
         if not is_owner:
             await send_smart_response(chat_id, bus_id, "Доступ заблокирован: снятие ограничений протокола 18+ разрешено только создателю, сэр.", is_direct=is_direct)
             return True
@@ -916,7 +950,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         await send_smart_response(chat_id, bus_id, "Протокол безопасности 18+ снят. Генератор разблокирован для взрослого и откровенного контента (NSFW), сэр.", is_direct=is_direct)
         return True
 
-    if lower_text in ["джарвис 18+ выкл", "!18+ выкл", "джарвис nsfw выкл", "!nsfw выкл", "18+ выкл", "nsfw выкл"]:
+    if lower_text in nsfw_off_triggers:
         if not is_owner:
             await send_smart_response(chat_id, bus_id, "Доступ заблокирован: изменение настроек протокола доступно только создателю, сэр.", is_direct=is_direct)
             return True
@@ -936,7 +970,8 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
             return True
 
         # Проверка защиты 18+
-        if is_nsfw_request(prompt) and not nsfw_art_mode:
+        req_is_nsfw = is_nsfw_request(prompt)
+        if req_is_nsfw and not nsfw_art_mode:
             notice = (
                 "Протокол безопасности: создание взрослого контента 18+ заблокировано.\n"
                 "Активация доступна только создателю по команде <code>джарвис 18+ вкл</code>, сэр."
@@ -945,7 +980,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
             return True
 
         status_text = f"Инициирую протокол визуализации: <i>«{prompt}»</i>. "
-        status_text += "Снят фильтр 18+, настраиваю анатомию, сэр..." if (nsfw_art_mode and is_nsfw_request(prompt)) else "Оптимизирую анатомию и детали, сэр..."
+        status_text += "Снят фильтр 18+, настраиваю анатомию, сэр..." if (nsfw_art_mode and req_is_nsfw) else "Оптимизирую анатомию и детали, сэр..."
         await send_smart_response(chat_id, bus_id, status_text, is_direct=is_direct)
 
         img_bytes = await generate_flux_image(prompt, allow_nsfw=nsfw_art_mode)
@@ -1250,7 +1285,7 @@ async def handle_direct_message(message: types.Message):
         await send_smart_response(chat_id, "", "Все системы онлайн. С возвращением домой, сэр.", is_direct=True)
         return
 
-    # Проверка команд (включая команду рисования с любым порядком слов)
+    # Проверка команд
     if await process_bot_command(message, user_input, is_owner=True, bus_id=""):
         return
 
