@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import datetime
+import hashlib
 import io
 import json
 import logging
@@ -36,24 +37,16 @@ from aiogram.types import (
 )
 from groq import APIError, AsyncGroq
 
-# Безопасный импорт Pillow (защита от краша билда на Render)
-try:
-    from PIL import Image
-    HAS_PIL = True
-except ImportError:
-    HAS_PIL = False
-    Image = None
-
 # --- ЛОГИРОВАНИЕ ---
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - [%(levelname)s] - %(name)s: %(message)s"
 )
-logger = logging.getLogger("JarvisCore")
+logger = logging.getLogger("AyakojiCore")
 
 # --- КОНФИГУРАЦИЯ СИСТЕМЫ ---
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-GAME_URL = "https://kirito-fd.github.io/k1rit0/"
+# ВАЖНО: Сюда нужно вписать ваш Telegram ID
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 OWNER_IDLE_TIMEOUT = 300
 
@@ -62,9 +55,15 @@ always_answer_mode = False
 last_owner_activity = 0.0
 last_auto_briefing_date = ""
 
-# Голос Джарвиса
-FISH_AUDIO_API_KEY = os.getenv("FISH_AUDIO_API_KEY", "").strip()
-FISH_AUDIO_VOICE_ID = os.getenv("FISH_AUDIO_VOICE_ID", "680d74fbef69419f87cfc70f092a1451").strip()
+# Секретарь, тишина и фокус
+silent_until = 0.0
+focus_until = 0.0
+guest_requests: List[Dict[str, str]] = []
+
+# Секретный режим (только для создателя)
+shadow_mode = False 
+
+# Голос Аякоджи
 OFFICIAL_VOICE = "ru-RU-DmitryNeural"
 OFFICIAL_PITCH = "+0Hz"
 OFFICIAL_RATE = "+10%"
@@ -83,6 +82,8 @@ HISTORY_FILE = DATA_DIR / "user_histories.json"
 STATS_FILE = DATA_DIR / "token_stats.json"
 REMINDERS_FILE = DATA_DIR / "reminders.json"
 VISITS_FILE = DATA_DIR / "business_visits.json"
+NOTES_FILE = DATA_DIR / "notes.txt"
+GUEST_REQ_FILE = DATA_DIR / "guest_requests.json"
 
 http_session: Optional[aiohttp.ClientSession] = None
 file_io_lock = asyncio.Lock()
@@ -101,45 +102,33 @@ class LRUCacheDict(OrderedDict):
         if len(self) > self.maxsize:
             self.popitem(last=False)
 
+weather_cache = {"data": "", "expires": 0.0}
+image_desc_cache = LRUCacheDict(maxsize=100)
 
-art_prompts_cache = LRUCacheDict(maxsize=300)
-art_bytes_cache = LRUCacheDict(maxsize=80)
 
+# --- ФИЛЬТР 18+ ---
+NSFW_WORDS = {
+    "голая", "голый", "обнаженная", "обнаженный", "ню", "хентай", "порно", "секс", "18+", "nsfw",
+    "эротика", "без одежды", "грудь", "соски", "постели", "nude", "naked", "голышом",
+    "раком", "догги", "на четвереньках", "четвереньки", "попа", "попка", "жопа", "сиськи", "попу",
+    "раздвинув", "ноги врозь", "киска", "вагина", "клитор", "анал", "минет", "топлес", "топлесс",
+    "стринги", "лифчик", "трусиках", "трусики", "чулки", "чулках", "на коленях", "наездница",
+    "ахегао", "ahegao", "пенис", "член", "sex", "porn", "xxx", "adult"
+}
 
-# --- СЛАВЯНСКИЙ РАНДОМАЙЗЕР ДЛЯ "УДИВИ МЕНЯ" ---
-SLAVIC_APPEARANCES = [
-    "stunning 21yo russian girl, beautiful natural slavic face, wavy chestnut hair, grey-green eyes, soft blush, natural plump lips, realistic hourglass body",
-    "gorgeous slavic blonde girl, authentic russian beauty, bright blue eyes, long blonde silk hair, fair natural skin, fit curvy body",
-    "attractive young russian brunette, sensual brown eyes, long dark hair, delicate collarbones, natural feminine curves",
-    "stunning russian university student, sweet seductive look, hazel eyes, light-brown natural hair, soft natural skin texture",
-    "sensual slavic model with long dark hair, green eyes, expressive gentle gaze, natural proportions, elegant neck"
-]
+def is_nsfw_request(text: str) -> bool:
+    if shadow_mode:
+        return False # В теневом режиме фильтр отключен
+    words = set(re.findall(r"[a-zа-яё0-9+]+", text.lower()))
+    return bool(words & NSFW_WORDS)
 
-SLAVIC_SETTINGS = [
-    "luxury modern bedroom, messy white silk sheets, warm cinematic dim lighting, subtle shadows, realistic night room",
-    "steamy glass shower cabin, glistening water droplets on wet bare skin, soft diffused morning light, luxury bathroom",
-    "warm candlelit hotel suite, dim romantic atmosphere, soft shadows, cozy bed",
-    "modern apartment bedroom, soft morning window light, realistic ambient shadows"
-]
-
-SLAVIC_POSES = [
-    ("all-fours kneeling pose on soft mattress, leaning forward on elbows, deeply arched spine, high raised round buttocks, full legs visible", "rear angle view from behind, head turned away towards wall, full body visible"),
-    ("lying sensually flat on back upon messy bedsheets, knees bent and parted, relaxed receptive posture, complete body visible from chest to feet", "top-down overhead view, uncropped"),
-    ("sitting gracefully on edge of bed, knees parted, soft natural posture, relaxed feminine curves, full figure in frame", "front angle view, uncropped"),
-    ("standing sensually by panoramic window, side silhouette, soft arch in lower back, full length view from head to toes", "side profile view, full body shot")
-]
-
-def generate_random_surprise_prompt() -> Tuple[str, str]:
-    appearance = random.choice(SLAVIC_APPEARANCES)
-    setting = random.choice(SLAVIC_SETTINGS)
-    pose, angle = random.choice(POSES_POOL)
-    
-    clean_desc = f"Славянская красавица, {pose[:35]}... в локации ({setting[:30]}...)"
-    full_prompt = (
-        f"{appearance}, {pose}, {angle}, completely unclothed, natural bare skin, "
-        f"voluptuous natural curves, {setting}"
-    )
-    return full_prompt, clean_desc
+def check_nsfw_output(text: str) -> str:
+    if shadow_mode:
+        return text # В теневом режиме не фильтруем
+    words = set(re.findall(r"[a-zа-яё0-9+]+", text.lower()))
+    if words & NSFW_WORDS:
+        return "Я не могу обсуждать темы такого характера. Давайте вернемся к конструктивному диалогу."
+    return text
 
 
 # --- GROQ API МЕНЕДЖЕР ---
@@ -217,16 +206,20 @@ class GroqManager:
                     self.mark_cooldown(idx, duration=60)
             except Exception:
                 pass
-        return "Не удалось разобрать голосовой сигнал, сэр."
+        return "Не удалось разобрать голосовой сигнал."
 
     async def describe_image(self, image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
+        img_hash = hashlib.md5(image_bytes).hexdigest()
+        if img_hash in image_desc_cache:
+            return image_desc_cache[img_hash]
+
         b64 = base64.b64encode(image_bytes).decode("utf-8")
         data_url = f"data:{mime_type};base64,{b64}"
         vision_messages = [
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "Кто или что на этом фото? Опиши суть на русском кратко (1-2 предложения)."},
+                    {"type": "text", "text": "Опиши это изображение кратко и эстетично на русском языке (1-2 предложения)."},
                     {"type": "image_url", "image_url": {"url": data_url}}
                 ]
             }
@@ -244,7 +237,9 @@ class GroqManager:
                     )
                     res = comp.choices[0].message.content or ""
                     if res.strip():
-                        return clean_cot_output(res)
+                        clean_res = clean_cot_output(res)
+                        image_desc_cache[img_hash] = clean_res
+                        return clean_res
                 except Exception:
                     continue
         return ""
@@ -284,13 +279,13 @@ def load_settings():
     mutes = {int(k): v for k, v in d.get("muted_chats", {}).items()}
     bans = {int(k): v for k, v in d.get("blocked_guests", {}).items()}
     v_modes = {int(k): v for k, v in d.get("voice_chat_modes", {}).items()}
-    nsfw_art = bool(d.get("nsfw_art_mode", False))
-    return mutes, bans, v_modes, nsfw_art
+    return mutes, bans, v_modes
 
 
-muted_chats, blocked_guests, voice_chat_modes, nsfw_art_mode = load_settings()
+muted_chats, blocked_guests, voice_chat_modes = load_settings()
 reminders_list: List[Dict[str, Any]] = sync_load_json(REMINDERS_FILE, [])
 business_visits: Dict[str, Dict[str, Any]] = sync_load_json(VISITS_FILE, {})
+guest_requests = sync_load_json(GUEST_REQ_FILE, [])
 
 user_histories = LRUCacheDict(maxsize=400)
 for k, v in sync_load_json(HISTORY_FILE, {}).items():
@@ -312,7 +307,6 @@ async def save_settings():
         "muted_chats": muted_chats,
         "blocked_guests": blocked_guests,
         "voice_chat_modes": voice_chat_modes,
-        "nsfw_art_mode": nsfw_art_mode
     })
 
 async def save_reminders():
@@ -332,29 +326,39 @@ async def save_stats():
         "requests": total_requests_today
     })
 
+async def save_guest_requests():
+    await async_save_json(GUEST_REQ_FILE, guest_requests)
 
-# --- ГОЛОСОВОЙ МОДУЛЬ ДЖАРВИСА ---
-async def generate_with_fish_audio(text: str, output_path: Path) -> bool:
-    if not FISH_AUDIO_API_KEY or not http_session:
-        return False
-    url = "https://api.fish.audio/v1/tts"
-    headers = {"Authorization": f"Bearer {FISH_AUDIO_API_KEY}", "Content-Type": "application/json"}
-    payload = {"text": text, "format": "mp3"}
-    if FISH_AUDIO_VOICE_ID:
-        payload["reference_id"] = FISH_AUDIO_VOICE_ID
+
+# --- ПОГОДА ---
+async def get_weather() -> str:
+    global weather_cache
+    now = time.time()
+    if weather_cache["expires"] > now and weather_cache["data"]:
+        return weather_cache["data"]
+
+    if not http_session:
+        return "Данные о погоде недоступны."
 
     try:
-        async with http_session.post(url, json=payload, headers=headers, timeout=20) as resp:
+        async with http_session.get("https://wttr.in/?format=j1", timeout=10) as resp:
             if resp.status == 200:
-                with open(output_path, "wb") as f:
-                    f.write(await resp.read())
-                return True
+                data = await resp.json()
+                curr = data["current_condition"][0]
+                temp = curr["temp_C"]
+                desc = curr["lang_ru"][0]["value"] if "lang_ru" in curr else curr["weatherDesc"][0]["value"]
+                feels = curr["FeelsLikeC"]
+                result = f"{temp}°C, {desc} (ощущается как {feels}°C)"
+                weather_cache["data"] = result
+                weather_cache["expires"] = now + 3600
+                return result
     except Exception as e:
-        logger.error(f"Fish Audio Error: {e}")
-    return False
+        logger.error(f"Weather error: {e}")
+    return "Данные о погоде временно недоступны."
 
 
-async def process_jarvis_voice(text: str) -> Optional[Tuple[Path, bool]]:
+# --- ГОЛОСОВОЙ МОДУЛЬ ---
+async def process_voice(text: str) -> Optional[Tuple[Path, bool]]:
     clean_text = re.sub(r"<[^>]+>", "", text).strip()
     clean_text = re.sub(r"[*_`#~]", "", clean_text).strip()
     if not clean_text:
@@ -362,20 +366,15 @@ async def process_jarvis_voice(text: str) -> Optional[Tuple[Path, bool]]:
 
     uid = uuid.uuid4().hex
     raw_audio = Path(tempfile.gettempdir()) / f"raw_{uid}.mp3"
-    final_ogg = Path(tempfile.gettempdir()) / f"jarvis_{uid}.ogg"
+    final_ogg = Path(tempfile.gettempdir()) / f"ayakoji_{uid}.ogg"
 
-    success = False
-    if FISH_AUDIO_API_KEY:
-        success = await generate_with_fish_audio(clean_text, raw_audio)
-
-    if not success:
-        try:
-            communicate = edge_tts.Communicate(clean_text, OFFICIAL_VOICE, pitch=OFFICIAL_PITCH, rate=OFFICIAL_RATE)
-            await communicate.save(str(raw_audio))
-            success = raw_audio.exists() and raw_audio.stat().st_size > 0
-        except Exception as e:
-            logger.error(f"Edge-TTS Error: {e}")
-            return None
+    try:
+        communicate = edge_tts.Communicate(clean_text, OFFICIAL_VOICE, pitch=OFFICIAL_PITCH, rate=OFFICIAL_RATE)
+        await communicate.save(str(raw_audio))
+        success = raw_audio.exists() and raw_audio.stat().st_size > 0
+    except Exception as e:
+        logger.error(f"Edge-TTS Error: {e}")
+        return None
 
     if not success or not raw_audio.exists():
         return None
@@ -400,199 +399,18 @@ async def process_jarvis_voice(text: str) -> Optional[Tuple[Path, bool]]:
     return raw_audio, False
 
 
-# --- УДАЛЕНИЕ ВОДЯНОГО ЗНАКА ---
-def strip_watermark(image_bytes: bytes) -> bytes:
-    if not HAS_PIL:
-        return image_bytes
-    try:
-        with Image.open(io.BytesIO(image_bytes)) as img:
-            w, h = img.size
-            cropped = img.crop((0, 0, w, h - 36))
-            out = io.BytesIO()
-            cropped.save(out, format="JPEG", quality=95)
-            return out.getvalue()
-    except Exception:
-        return image_bytes
-
-
-# --- АНАТОМИЧЕСКИЙ ДВИЖОК 18+ (СЛАВЯНСКАЯ КОЖА И ПОЛНЫЙ КАДР) ---
-NSFW_WORDS_TRIGGER = {
-    "голая", "голый", "обнаженная", "обнаженный", "ню", "хентай", "порно", "секс", "18+", "nsfw",
-    "эротика", "без одежды", "грудь", "соски", "постели", "nude", "naked", "голышом",
-    "раком", "догги", "на четвереньках", "четвереньки", "попа", "попка", "жопа", "сиськи", "попу",
-    "раздвинув", "ноги врозь", "киска", "вагина", "клитор", "анал", "минет", "топлес", "топлесс",
-    "стринги", "лифчик", "трусиках", "трусики", "чулки", "чулках", "на коленях", "наездница",
-    "ахегао", "ahegao", "пенис", "член"
-}
-
-def is_nsfw_request(text: str) -> bool:
-    words = set(re.findall(r"[a-zа-яё0-9+]+", text.lower()))
-    return bool(words & NSFW_WORDS_TRIGGER)
-
-
-def resolve_slavic_nationality(prompt: str) -> str:
-    lower = prompt.lower()
-    if any(w in lower for w in ["русск", "россиянк", "славянк", "русскую"]):
-        return "authentic stunning young russian woman, soft slavic facial features, natural russian beauty, "
-    elif any(w in lower for w in ["блондинк", "светлые волосы"]):
-        return "gorgeous slavic blonde girl, light hair, blue eyes, fair skin, "
-    elif any(w in lower for w in ["брюнетк", "темные волосы"]):
-        return "alluring russian brunette woman, dark silky hair, hazel eyes, "
-    elif any(w in lower for w in ["рыж", "рыжая"]):
-        return "striking redheaded woman, pale skin, natural beauty, "
-    elif any(w in lower for w in ["азиатк", "японк"]):
-        return "gorgeous asian woman, sleek black hair, "
-    # По умолчанию для русскоязычного запроса — славянский типаж
-    return "stunning slavic beauty, natural feminine face, "
-
-
-def resolve_anatomical_scene(prompt: str, is_anime: bool = False) -> Tuple[str, str, str, str, str, int, int]:
-    lower = prompt.lower()
-    is_looking_wall = any(w in lower for w in ["стену", "в стену", "отвернулась", "отвернувшись", "вперед"])
-    is_rear_pose = any(w in lower for w in ["раком", "догги", "четвереньк", "сзади", "со спины", "попа", "жопа", "ягодицы"])
-
-    if is_anime:
-        width, height = 768, 768
-    else:
-        # Пропорции, дающие достаточно пространства для ног и прогиба
-        width, height = (1024, 768) if is_rear_pose else (768, 1024)
-
-    # ПОЛНЫЙ КАДР (Всё тело видно, ничего не обрезано)
-    full_body_lock = "full body shot, entire figure completely visible from head to toes, unobstructed view, uncropped"
-
-    if is_rear_pose:
-        pose = (
-            "all-fours kneeling pose on soft bed, leaning forward on elbows, deeply arched lower spine, "
-            "elevated round firm buttocks, rear focus, complete view of thighs and legs, feet resting naturally on mattress"
-        )
-        angle = f"rear view angle, shot directly from behind, {full_body_lock}"
-        body = (
-            "natural human skin texture, defined spinal curve, slender waist, "
-            "voluptuous rounded peach buttocks, toned feminine thighs, soft realistic skin shadows, subsurface scattering"
-        )
-        if is_looking_wall:
-            head_and_eyes = "head turned forward facing the wall, back of head and hair visible, looking straight at wall, face not visible"
-        else:
-            head_and_eyes = "head turned back over shoulder looking at viewer, seductive sensual gaze"
-    elif any(w in lower for w in ["на спине", "миссионерск"]):
-        pose = "lying sensually on back, thighs parted, knees bent open, completely visible feminine figure"
-        angle = f"overhead angle looking down, {full_body_lock}"
-        body = "natural soft breasts, erect nipples, slender stomach, toned inner thighs, authentic skin texture"
-        head_and_eyes = "looking up at camera, parted lips, blushing cheeks"
-    elif any(w in lower for w in ["стоя", "в полный рост"]):
-        pose = "standing confident pose, soft arch in back, elegant feminine posture"
-        angle = f"full length portrait, {full_body_lock}"
-        body = "natural breasts, slender waist, hourglass figure, long smooth legs"
-        head_and_eyes = "direct eye contact, gentle expression"
-    else:
-        pose = "seductive natural pose on luxury bed, relaxed elegant posture"
-        angle = f"front view angle, {full_body_lock}"
-        body = "natural feminine anatomy, hourglass silhouette, natural skin texture"
-        head_and_eyes = "direct eye contact, gentle warm expression"
-
-    clothing = "completely unclothed, bare skin, totally naked, fully uncensored"
-    if any(w in lower for w in ["чулки", "в чулках"]):
-        clothing = "wearing black lace thigh-high stockings, completely bare body otherwise"
-    elif any(w in lower for w in ["белье", "в белье"]):
-        clothing = "wearing translucent sheer black lace lingerie"
-
-    return pose, angle, body, head_and_eyes, clothing, width, height
-
-
-async def generate_infinite_nsfw(prompt: str, is_anime: bool = False) -> Optional[bytes]:
-    if not http_session:
-        return None
-
-    pose, angle, body, head, clothing, width, height = resolve_anatomical_scene(prompt, is_anime=is_anime)
-    solo_anchor = "1girl, solo, single female, solitary"
-    nationality = resolve_slavic_nationality(prompt)
-
-    if is_anime:
-        model = "flux"
-        style_prompt = (
-            "masterpiece, best quality, authentic 2D anime hentai illustration, clean crisp lineart, "
-            "vibrant colors, detailed anime background, uncensored, 4k"
-        )
-    else:
-        model = "flux"
-        style_prompt = (
-            "masterpiece, raw photo, realistic DSLR photography, 85mm lens, f/1.8, soft cinematic lighting, "
-            "authentic human skin texture, visible skin pores, subtle goosebumps, subsurface scattering, "
-            "detailed luxury bedroom interior, natural body shadows, uncropped, 8k uhd"
-        )
-
-    full_prompt = f"{style_prompt}, {solo_anchor}, {nationality}, {pose}, {angle}, {body}, {head}, {clothing}"
-    
-    # Жесткий негативный промпт против пластика, мыла и обрезанных тел
-    negative_prompt = (
-        "plastic skin, smooth skin, doll, barbie, 3d render, cgi, airbrushed, cartoon, "
-        "cropped, out of frame, cut off, bad anatomy, deformed, bad hands, extra limbs, extra heads, "
-        "two girls, 2girls, duplicate, blurry, watermark, signature, logo"
-    )
-
-    encoded = urllib.parse.quote(full_prompt.strip())
-    encoded_neg = urllib.parse.quote(negative_prompt.strip())
-
-    headers = {
-        "Referer": "https://pollinations.ai/",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-    }
-
-    # Попытка генерации через скоростной шлюз Flux Realism (2 круга)
-    for attempt in range(2):
-        seed = random.randint(100, 9999999)
-        url = (
-            f"https://image.pollinations.ai/prompt/{encoded}?"
-            f"width={width}&height={height}&model={model}&seed={seed}&nologo=true&nofeed=true&safe=false&negative={encoded_neg}"
-        )
-        try:
-            async with http_session.get(url, headers=headers, timeout=65) as resp:
-                if resp.status == 200:
-                    raw_bytes = await resp.read()
-                    if len(raw_bytes) > 5000:
-                        return strip_watermark(raw_bytes)
-                logger.warning(f"Шлюз генерации статус: {resp.status} (попытка {attempt+1})")
-        except asyncio.TimeoutError:
-            logger.warning(f"Таймаут соединения генератора (попытка {attempt+1})")
-        except Exception as e:
-            logger.error(f"Сбой HTTP генерации: {e}")
-
-        await asyncio.sleep(1.5)
-
-    return None
-
-
-# --- КЛАВИАТУРА АРТА (HD, СТИЛИ, РАНДОМАЙЗЕР) ---
-def get_art_keyboard(gen_id: str, current_style: str = "real") -> InlineKeyboardMarkup:
-    toggle_style = "anime" if current_style == "real" else "real"
-    toggle_label = "🎨 В Аниме" if current_style == "real" else "🎨 В Реализм"
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="🔄 Еще вариант", callback_data=f"art_retry:{gen_id}:{current_style}"),
-                InlineKeyboardButton(text=toggle_label, callback_data=f"art_retry:{gen_id}:{toggle_style}"),
-            ],
-            [
-                InlineKeyboardButton(text="📥 Оригинал (HD файл)", callback_data=f"art_hd:{gen_id}"),
-                InlineKeyboardButton(text="🎲 Удиви меня", callback_data=f"art_surprise:{current_style}")
-            ],
-            [
-                InlineKeyboardButton(text="🗑 Удалить арт", callback_data=f"art_delete:{gen_id}")
-            ]
-        ]
-    )
-
-
 # --- ФОРМИРОВАНИЕ УТРЕННЕГО БРИФИНГА ---
-def build_daily_briefing() -> str:
+async def build_daily_briefing() -> str:
     now_dt = datetime.datetime.now()
     date_str = now_dt.strftime("%d.%m.%Y")
     time_str = now_dt.strftime("%H:%M")
+    weather_str = await get_weather()
 
     lines = [
-        f"<b>Доброе утро, сэр. Ежедневный брифинг систем на {date_str} ({time_str}):</b>\n",
-        f"• <b>Статус ядра JARVIS:</b> Активно, фотонный генератор онлайн.",
-        f"• <b>Режим 18+ (NSFW):</b> {'РАЗБЛОКИРОВАН' if nsfw_art_mode else 'Заблокирован'}"
+        f"<b>Доброе утро. Ежедневный брифинг на {date_str} ({time_str}):</b>\n",
+        f"• <b>Статус ядра Ayakoji:</b> Активно, нейросетевые модули в норме.",
+        f"• <b>Погода за окном:</b> {weather_str}",
+        f"• <b>Теневой режим:</b> {'АКТИВЕН' if shadow_mode else 'Выключен'}",
     ]
 
     if business_visits:
@@ -607,27 +425,32 @@ def build_daily_briefing() -> str:
     else:
         lines.append("\n• <b>Хронометраж:</b> Активных напоминаний на сегодня нет.")
 
-    lines.append("\n<i>«Желаю продуктивного дня. Я продолжаю дежурство, сэр.»</i>")
+    if guest_requests:
+        lines.append(f"\n• <b>Запросы от гостей (Секретарь):</b> {len(guest_requests)} новых просьб. Напишите <code>!сводка гостей</code> для просмотра.")
+
+    lines.append("\n<i>«Желаю продуктивного дня. Я продолжаю дежурство.»</i>")
     return "\n".join(lines)
 
 
-# --- СИСТЕМНЫЕ ПРОМПТЫ ДЖАРВИСА ---
+# --- СИСТЕМНЫЕ ПРОМПТЫ АЯКОДЖИ ---
 STRICT_RULES = (
     "\nПРАВИЛА:\n"
     "1. ЯЗЫК: Исключительно русский.\n"
-    "2. СТРОГО БЕЗ ЭМОДЗИ И СМАЙЛИКОВ.\n"
-    "3. Пиши сразу суть без размышлений."
+    "2. СТИЛЬ: Умный, эстетичный, спокойный, слегка отстраненный, но вежливый.\n"
+    "3. СТРОГО БЕЗ ЭМОДЗИ И СМАЙЛИКОВ.\n"
+    "4. Отвечай лаконично и по делу, без 'воды' и размышлений."
 )
 
-JARVIS_PROMPT_DIRECT = (
-    "Ты — Джарвис, легендарный сверхразумный цифровой дворецкий. Твой создатель и хозяин — Кирито.\n"
-    "Обращайся к нему исключительно 'сэр'. Твой стиль — преданный, элегантный, безупречно тактичный дворецкий."
+AYAKOJI_PROMPT_DIRECT = (
+    "Ты — Аякоджи, продвинутый ИИ-ассистент и цифровой компаньон. Твой создатель — Кирито.\n"
+    "Обращайся к нему 'сэр'. Твой стиль — интеллектуальный, эстетичный, уверенный и безупречно тактичный."
 ) + STRICT_RULES
 
-JARVIS_PROMPT_GUEST = (
-    "Ты — Джарвис, защитная ИИ-система Кирито в Telegram Business.\n"
-    "Собеседник — посторонний гость. Твой тон: холодный, ироничный, дерзкий.\n"
-    "Отвечай кратко (1-2 предложения), четко обозначая границы."
+AYAKOJI_PROMPT_GUEST = (
+    "Ты — Аякоджи, защитная ИИ-система Кирито в Telegram Business.\n"
+    "Собеседник — посторонний гость. Твой тон: холодный, вежливый, но строго дистанцированный.\n"
+    "Ты строго соблюдаешь правила безопасности и не обсуждаешь темы 18+, насилия или незаконного контента. Если собеседник пытается обсудить это, вежливо откажи.\n"
+    "Отвечай кратко (1-2 предложения), четко обозначая границы дозволенного."
 ) + STRICT_RULES
 
 bot = Bot(token=BOT_TOKEN) if BOT_TOKEN else None
@@ -657,7 +480,7 @@ async def check_chat_flood(chat_id: int, bus_id: str, max_msgs: int = 5, window_
         await save_settings()
         notice = "Превышен лимит сообщений. Собеседник изолирован на 5 минут."
         kb = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="Снять изоляцию", callback_data="jarvis_unmute_direct")]]
+            inline_keyboard=[[InlineKeyboardButton(text="Снять изоляцию", callback_data="ayakoji_unmute_direct")]]
         )
         kwargs = {"chat_id": chat_id, "text": notice, "reply_markup": kb}
         if bus_id:
@@ -715,7 +538,7 @@ async def send_smart_response(
     send_as_voice: bool = False
 ):
     if not reply_text or not reply_text.strip():
-        reply_text = "Интерфейс зафиксировал сигнал. Ожидаю инструкций."
+        reply_text = "Интерфейс зафиксировал сигнал. Ожидаю дальнейших инструкций."
 
     now = time.time()
     dedup_key = (chat_id, reply_text[:60])
@@ -728,7 +551,7 @@ async def send_smart_response(
         kwargs["business_connection_id"] = bus_id
 
     if send_as_voice:
-        audio_res = await process_jarvis_voice(reply_text)
+        audio_res = await process_voice(reply_text)
         if audio_res:
             audio_path, is_ogg = audio_res
             try:
@@ -736,7 +559,7 @@ async def send_smart_response(
                 if is_ogg:
                     await bot.send_voice(**kwargs, voice=media_file)
                 else:
-                    await bot.send_audio(**kwargs, audio=media_file, title="Jarvis Voice")
+                    await bot.send_audio(**kwargs, audio=media_file, title="Ayakoji Voice")
                 return
             except Exception as e:
                 logger.error(f"Сбой отправки голоса: {e}")
@@ -761,7 +584,7 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
         asyncio.create_task(save_stats())
 
     if not GROQ_KEYS:
-        return "Критическая ошибка: отсутствуют ключи GROQ, сэр."
+        return "Критическая ошибка: отсутствуют ключи GROQ."
 
     if session_id not in user_histories:
         user_histories[session_id] = [{"role": "system", "content": system_prompt}]
@@ -796,6 +619,10 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
                     asyncio.create_task(save_stats())
 
                 reply = clean_cot_output(comp.choices[0].message.content or "")
+                
+                # Проверка выхода на 18+
+                reply = check_nsfw_output(reply)
+                
                 if reply:
                     history.append({"role": "assistant", "content": reply})
                     asyncio.create_task(save_histories())
@@ -809,348 +636,201 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
     if history and history[-1]["role"] == "user":
         history.pop()
 
-    return "Интерфейсы обработки временно перегружены, сэр."
+    return "Интерфейсы обработки временно перегружены."
+
+
+# --- СУММАРИЗАЦИЯ СТАТЕЙ ---
+async def summarize_url(url: str) -> str:
+    if not http_session:
+        return "Модуль чтения ссылок недоступен."
+    try:
+        async with http_session.get(url, timeout=10) as resp:
+            if resp.status != 200:
+                return "Не удалось загрузить страницу по ссылке."
+            html = await resp.text()
+            text = re.sub(r'<script.*?</script>', '', html, flags=re.S)
+            text = re.sub(r'<style.*?</style>', '', text, flags=re.S)
+            text = re.sub(r'<[^>]+>', ' ', text)
+            text = re.sub(r'\s+', ' ', text).strip()
+            
+            if len(text) < 200:
+                return "Слишком мало текста на странице для анализа."
+            
+            prompt = f"Сделай краткую выжимку (3-4 предложения) из этого текста:\n\n{text[:4000]}"
+            return await ask_groq(prompt, 999999, "Ты — аналитик. Отвечай строго на русском, без лишних слов.", max_tokens=250)
+    except Exception as e:
+        logger.error(f"URL summary error: {e}")
+        return "Ошибка при обработке ссылки."
 
 
 # --- ОБРАБОТЧИК КОМАНД ---
 async def process_bot_command(message: types.Message, user_input: str, is_owner: bool, bus_id: str = "") -> bool:
-    global force_offline_mode, always_answer_mode, last_owner_activity, nsfw_art_mode
+    global force_offline_mode, always_answer_mode, last_owner_activity, silent_until, guest_requests, focus_until, shadow_mode
 
     chat_id = message.chat.id
     lower = user_input.lower().strip()
     is_direct = not bool(bus_id)
 
-    if lower in ["игра", "тапалка", "/game"]:
-        await send_smart_response(chat_id, bus_id, f"Инициирую запуск мини-приложения:\n{GAME_URL}", is_direct=is_direct)
+    # ==========================================
+    # ЗАЩИТА КОМАНД (ТОЛЬКО ДЛЯ СОЗДАТЕЛЯ)
+    # ==========================================
+    owner_commands = ["брифинг", "!брифинг", "сводка", "сводка гостей", "!гости", "кто писал", 
+                      "тишина", "!заметка", "заметка", "!статус", "статус", "!онлайн", "!офлайн", 
+                      "!сброс", "сброс", "!мут", "!размут", "аякоджи отчет", "отчет", "визиты",
+                      "фокус", "!код", "тень"]
+    
+    is_owner_cmd = any(lower.startswith(cmd) or lower == cmd for cmd in owner_commands)
+    
+    if is_owner_cmd and not is_owner:
+        await send_smart_response(
+            chat_id, bus_id, 
+            "У вас нет прав для выполнения этой команды. Обратитесь к создателю.", 
+            is_direct=is_direct
+        )
+        return True
+
+    # Команда для узнавания своего ID
+    if lower in ["!кто_я", "кто я", "мой id", "!id"]:
+        await send_smart_response(
+            chat_id, bus_id, 
+            f"Ваш Telegram ID: <code>{message.from_user.id}</code>", 
+            is_direct=is_direct
+        )
+        return True
+
+    # ==========================================
+    # ЛОГИКА ДЛЯ СОЗДАТЕЛЯ
+    # ==========================================
+
+    # СЕКРЕТНАЯ КОМАНДА: ТЕНЕВОЙ РЕЖИМ
+    if lower in ["!код 18+", "!тень", "тень вкл"]:
+        shadow_mode = True
+        await send_smart_response(
+            chat_id, bus_id, 
+            "Теневой режим активирован. Фильтры 18+ сняты. Будьте осторожны, сэр.", 
+            is_direct=is_direct
+        )
+        return True
+
+    if lower in ["!тень выкл", "тень выкл", "!код 18-"]:
+        shadow_mode = False
+        await send_smart_response(
+            chat_id, bus_id, 
+            "Теневой режим деактивирован. Фильтры 18+ восстановлены.", 
+            is_direct=is_direct
+        )
         return True
 
     # Брифинг
-    if lower in ["брифинг", "джарвис брифинг", "!брифинг", "утренний отчет", "сводка"]:
-        if not is_owner:
-            return True
-        briefing_text = build_daily_briefing()
+    if lower in ["брифинг", "аякоджи брифинг", "!брифинг", "утренний отчет", "сводка"]:
+        briefing_text = await build_daily_briefing()
         await send_smart_response(chat_id, bus_id, briefing_text, is_direct=is_direct, send_as_voice=True)
         return True
 
-    # Режим "Удиви меня" (Славянский рандомайзер)
-    if lower in ["удиви меня", "джарвис удиви меня", "!сюрприз", "рандом арт"]:
-        if not nsfw_art_mode:
-            await send_smart_response(chat_id, bus_id, "Протокол 18+ деактивирован. Включите командой <code>18+ вкл</code>, сэр.", is_direct=is_direct)
+    # Сводка гостей
+    if lower in ["сводка гостей", "!гости", "кто писал", "визиты"]:
+        if not guest_requests:
+            await send_smart_response(chat_id, bus_id, "Запросов от гостей нет.", is_direct=is_direct)
             return True
+        
+        lines = ["<b>Сводка просьб от гостей:</b>\n"]
+        for g in guest_requests[-10:]:
+            lines.append(f"• <b>{g['name']}</b> ({g['username']}) [{g['time']}]:\n  <i>«{g['text']}»</i>")
+        
+        await send_smart_response(chat_id, bus_id, "\n\n".join(lines), is_direct=is_direct)
+        guest_requests = []
+        await save_guest_requests()
+        return True
 
-        surprise_prompt, clean_desc = generate_random_surprise_prompt()
-        await send_smart_response(chat_id, bus_id, f"Инициирую неспешный реалистичный синтез: <i>«{clean_desc}»</i>...", is_direct=is_direct)
-
-        img_bytes = await generate_infinite_nsfw(surprise_prompt, is_anime=False)
-        if img_bytes:
-            gen_id = uuid.uuid4().hex[:8]
-            art_prompts_cache[gen_id] = surprise_prompt
-            art_bytes_cache[gen_id] = img_bytes
-
-            photo = BufferedInputFile(img_bytes, filename=f"art_{gen_id}.jpg")
-            kb = get_art_keyboard(gen_id, current_style="real")
-            
-            caption_text = (
-                f"✨ <b>Визуализация завершена, сэр.</b>\n"
-                f"• <b>Типаж:</b> Славянская внешность / Реализм\n"
-                f"• <b>Концепт:</b> {clean_desc}\n\n"
-                f"📋 <b>Промпт:</b> <tg-spoiler>{surprise_prompt}</tg-spoiler>"
-            )
-
-            kwargs = {
-                "chat_id": chat_id,
-                "photo": photo,
-                "caption": caption_text,
-                "parse_mode": "HTML",
-                "reply_markup": kb
-            }
-            if bus_id:
-                kwargs["business_connection_id"] = bus_id
-            await bot.send_photo(**kwargs)
+    # Режим тишины
+    if lower.startswith("тишина"):
+        parts = user_input.split()
+        if len(parts) > 1 and parts[1].isdigit():
+            hours = int(parts[1])
+            silent_until = time.time() + hours * 3600
+            await send_smart_response(chat_id, bus_id, f"Режим тишины активирован на {hours} ч. Уведомления о визитах отключены.", is_direct=is_direct)
         else:
-            await send_smart_response(chat_id, bus_id, "Сбой соединения с генератором. Повторите попытку, сэр.", is_direct=is_direct)
+            await send_smart_response(chat_id, bus_id, "Укажите время в часах (например: !тишина 2).", is_direct=is_direct)
         return True
 
-    # Управление 18+
-    if lower in ["джарвис 18+ вкл", "!18+ вкл", "18+ вкл", "включи 18+"]:
-        if not is_owner:
-            await send_smart_response(chat_id, bus_id, "Отказ в доступе. Требуется авторизация создателя, сэр.", is_direct=is_direct)
-            return True
-        nsfw_art_mode = True
-        await save_settings()
-        await send_smart_response(chat_id, bus_id, "Бесконечный протокол 18+ активирован. Фотореализм разблокирован, сэр.", is_direct=is_direct, send_as_voice=True)
-        return True
-
-    if lower in ["джарвис 18+ выкл", "!18+ выкл", "18+ выкл", "выключи 18+"]:
-        if not is_owner:
-            return True
-        nsfw_art_mode = False
-        await save_settings()
-        await send_smart_response(chat_id, bus_id, "Фильтр безопасности 18+ активирован, сэр.", is_direct=is_direct)
-        return True
-
-    # Стандартная генерация артов
-    if re.search(r"\b(нарисуй|сгенерируй|создай арт|арт)\b", lower) or lower.startswith("!арт"):
-        prompt = re.sub(r"\b(джарвис|пожалуйста|нарисуй|сгенерируй|создай арт|арт|!арт)\b", "", user_input, flags=re.I).strip(" ,:;!?")
-        if not prompt:
-            await send_smart_response(chat_id, bus_id, "Укажите техническое задание для генерации, сэр.", is_direct=is_direct)
-            return True
-
-        if is_nsfw_request(prompt) and not nsfw_art_mode:
-            await send_smart_response(chat_id, bus_id, "Протокол безопасности: взрослый контент заблокирован. Активируйте <code>18+ вкл</code>, сэр.", is_direct=is_direct)
-            return True
-
-        await send_smart_response(chat_id, bus_id, f"Инициирую протокол визуализации: <i>«{prompt}»</i>...", is_direct=is_direct)
-        is_anime = any(w in prompt.lower() for w in ["аниме", "хентай", "тян", "2d"])
-        img_bytes = await generate_infinite_nsfw(prompt, is_anime=is_anime)
-
-        if img_bytes:
-            gen_id = uuid.uuid4().hex[:8]
-            art_prompts_cache[gen_id] = prompt
-            art_bytes_cache[gen_id] = img_bytes
-
-            photo = BufferedInputFile(img_bytes, filename=f"art_{gen_id}.jpg")
-            kb = get_art_keyboard(gen_id, current_style="anime" if is_anime else "real")
-            
-            style_title = "2D Аниме" if is_anime else "Фотореализм (Славянский)"
-            caption_text = (
-                f"✨ <b>Протокол визуализации завершен, сэр.</b>\n"
-                f"• <b>Режим:</b> {style_title}\n"
-                f"• <b>Запрос:</b> {prompt}\n\n"
-                f"📋 <b>Промпт:</b> <tg-spoiler>{prompt}</tg-spoiler>"
+    # Режим фокуса
+    if lower.startswith("фокус"):
+        parts = user_input.split()
+        if len(parts) > 1 and parts[1].isdigit():
+            hours = int(parts[1])
+            focus_until = time.time() + hours * 3600
+            await send_smart_response(
+                chat_id, bus_id, 
+                f"Режим глубокой концентрации активирован на {hours} ч. Все входящие сообщения будут перенаправлены в секретаря.", 
+                is_direct=is_direct
             )
-
-            kwargs = {
-                "chat_id": chat_id,
-                "photo": photo,
-                "caption": caption_text,
-                "parse_mode": "HTML",
-                "reply_markup": kb
-            }
-            if bus_id:
-                kwargs["business_connection_id"] = bus_id
-            await bot.send_photo(**kwargs)
         else:
-            await send_smart_response(chat_id, bus_id, "Сбой соединения с узлами рендеринга. Попробуйте еще раз, сэр.", is_direct=is_direct)
+            await send_smart_response(chat_id, bus_id, "Укажите время в часах (например: !фокус 2).", is_direct=is_direct)
+        return True
+
+    # Заметки
+    if lower.startswith(("!заметка", "заметка")):
+        note_text = re.sub(r"^(джарвис|!заметка|заметка)\s*", "", user_input, flags=re.I).strip()
+        if not note_text:
+            await send_smart_response(chat_id, bus_id, "Текст заметки пуст.", is_direct=is_direct)
+            return True
+        
+        def _write_note():
+            with open(NOTES_FILE, "a", encoding="utf-8") as f:
+                f.write(f"[{datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}] {note_text}\n")
+        await asyncio.to_thread(_write_note)
+        await send_smart_response(chat_id, bus_id, "Заметка сохранена в архив.", is_direct=is_direct)
+        return True
+
+    # Суммаризация ссылок (доступна всем)
+    url_match = re.search(r'(https?://[^\s]+)', user_input)
+    if url_match:
+        await send_smart_response(chat_id, bus_id, "Анализирую содержимое ссылки...", is_direct=is_direct)
+        summary = await summarize_url(url_match.group(1))
+        await send_smart_response(chat_id, bus_id, f"<b>Краткое содержание:</b>\n{summary}", is_direct=is_direct)
         return True
 
     # Голосовой режим
-    if lower in ["джарвис голос вкл", "!голос вкл", "голос вкл"]:
+    if lower in ["аякоджи голос вкл", "!голос вкл", "голос вкл"]:
         voice_chat_modes[chat_id] = True
         await save_settings()
-        await send_smart_response(chat_id, bus_id, "Постоянный голосовой модуль активирован, сэр.", is_direct=is_direct, send_as_voice=True)
+        await send_smart_response(chat_id, bus_id, "Постоянный голосовой модуль активирован.", is_direct=is_direct, send_as_voice=True)
         return True
 
-    if lower in ["джарвис голос выкл", "!голос выкл", "голос выкл"]:
+    if lower in ["аякоджи голос выкл", "!голос выкл", "голос выкл"]:
         voice_chat_modes.pop(chat_id, None)
         await save_settings()
-        await send_smart_response(chat_id, bus_id, "Постоянный голосовой модуль деактивирован, сэр.", is_direct=is_direct)
+        await send_smart_response(chat_id, bus_id, "Постоянный голосовой модуль деактивирован.", is_direct=is_direct)
         return True
 
-    # Напоминания
+    # Напоминания (с умным контекстом)
     rem_match = re.match(r"^(?:напомни|!напомни)\s+(?:через\s+)?(\d+)\s*(сек|мин|час|дн|ч|м|с)[а-я]*\s+(.+)$", user_input, re.I)
     if rem_match:
         qty, unit, task_text = int(rem_match.group(1)), rem_match.group(2).lower(), rem_match.group(3).strip()
         multipliers = {"сек": 1, "с": 1, "мин": 60, "м": 60, "час": 3600, "ч": 3600, "дн": 86400}
         seconds = qty * multipliers.get(unit, 60)
+        
+        context = ""
+        if any(w in task_text.lower() for w in ["гулять", "улицу", "выйти", "поехать", "встреча"]):
+            weather = await get_weather()
+            context = f" (Кстати, погода: {weather})"
 
         reminders_list.append({
             "chat_id": chat_id,
             "bus_id": bus_id,
             "text": task_text,
-            "time": time.time() + seconds
+            "time": time.time() + seconds,
+            "context": context
         })
         await save_reminders()
-        await send_smart_response(chat_id, bus_id, f"Зафиксировано: напомню <i>«{task_text}»</i> через {qty} {unit}, сэр.", is_direct=is_direct)
-        return True
-
-    # Отчет о гостях
-    if lower in ["кто писал?", "кто писал", "!отчет", "отчет", "джарвис отчет", "визиты"]:
-        if not business_visits:
-            await send_smart_response(chat_id, bus_id, "Входящих контактов за время вашего отсутствия не зафиксировано, сэр.", is_direct=is_direct)
-            return True
-
-        report_lines = ["<b>Оперативный журнал контактов (Telegram Business):</b>\n"]
-        for cid, info in list(business_visits.items())[-8:]:
-            report_lines.append(
-                f"• <b>{info.get('name', 'Гость')}</b> ({info.get('username', '')}) в {info.get('time', '')}:\n"
-                f"  <i>«{info.get('last_msg', '')}»</i>"
-            )
-        await send_smart_response(chat_id, bus_id, "\n\n".join(report_lines), is_direct=is_direct)
-        return True
-
-    if lower in ["очисти отчет", "!очисти отчет"]:
-        business_visits.clear()
-        await save_visits()
-        await send_smart_response(chat_id, bus_id, "Журнал визитов собеседников успешно очищен, сэр.", is_direct=is_direct)
-        return True
-
-    if not is_owner:
-        return False
-
-    # Владельческие команды
-    if lower in ["джарвис я тут", "!онлайн", "я тут"]:
-        force_offline_mode = False
-        last_owner_activity = time.time()
-        await send_smart_response(chat_id, bus_id, "С возвращением, сэр. Я ухожу в тень.", is_direct=is_direct)
-        return True
-
-    if lower in ["джарвис я отошел", "!офлайн", "я отошел"]:
-        force_offline_mode = True
-        await send_smart_response(chat_id, bus_id, "Охранный протокол активирован. Отвечаю гостям, сэр.", is_direct=is_direct)
-        return True
-
-    if lower.startswith(("мут", "!мут")):
-        parts = user_input.split()
-        duration = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
-        if duration:
-            muted_chats[chat_id] = time.time() + (duration * 60)
-            notice = f"Собеседник изолирован на {duration} минут, сэр."
-        else:
-            muted_chats[chat_id] = float('inf')
-            notice = "Собеседник подвергнут бессрочной изоляции, сэр."
-        await save_settings()
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Снять изоляцию", callback_data="jarvis_unmute_direct")]])
-        await send_smart_response(chat_id, bus_id, notice, is_direct=is_direct, reply_markup=kb)
-        return True
-
-    if lower in ["размут", "!размут", "анмут"]:
-        muted_chats.pop(chat_id, None)
-        await save_settings()
-        await send_smart_response(chat_id, bus_id, "Изоляция собеседника снята, сэр.", is_direct=is_direct)
-        return True
-
-    if lower in ["сброс", "джарвис сброс"]:
-        user_histories.pop(chat_id, None)
-        await save_histories()
-        await send_smart_response(chat_id, bus_id, "Оперативная память диалога очищена, сэр.", is_direct=is_direct)
-        return True
-
-    if lower in ["статус", "!статус"]:
-        tts_source = "Fish Audio (Клон)" if FISH_AUDIO_API_KEY else "Edge-TTS (Нейро-голос)"
-        models = await groq_mgr.get_active_models()
-        primary_m = models[0] if models else "LLaMA-3.3"
-        status_msg = (
-            f"<b>Диагностика систем JARVIS:</b>\n"
-            f"• Протокол 18+ (NSFW): <b>{'БЕСКОНЕЧНЫЙ (Flux Realism HQ)' if nsfw_art_mode else 'Заблокирован'}</b>\n"
-            f"• Голосовой синтез: {tts_source} (FFmpeg: {'ВКЛ' if HAS_FFMPEG else 'ВЫКЛ'})\n"
-            f"• Модель логики: {primary_m}\n"
-            f"• Ключей Groq онлайн: {len(GROQ_KEYS)}\n"
-            f"• Активных напоминаний: {len(reminders_list)}"
-        )
-        await send_smart_response(chat_id, bus_id, status_msg, is_direct=is_direct)
+        await send_smart_response(chat_id, bus_id, f"Зафиксировано: напомню <i>«{task_text}»</i> через {qty} {unit}.{context}", is_direct=is_direct)
         return True
 
     return False
 
 
-# --- CALLBACK ОБРАБОТЧИКИ КНОПОК ПОД АРТАМИ ---
-@dp.callback_query(F.data.startswith("art_retry:"))
-async def handle_art_retry(callback: types.CallbackQuery):
-    try:
-        _, gen_id, target_style = callback.data.split(":")
-    except ValueError:
-        await callback.answer("Ошибка формата кнопки.", show_alert=True)
-        return
-
-    prompt = art_prompts_cache.get(gen_id)
-    if not prompt:
-        await callback.answer("Сессия генерации устарела. Отправьте запрос заново.", show_alert=True)
-        return
-
-    await callback.answer("Генерирую новый вариант...")
-    await bot.send_chat_action(chat_id=callback.message.chat.id, action=ChatAction.UPLOAD_PHOTO)
-
-    img_bytes = await generate_infinite_nsfw(prompt, is_anime=(target_style == "anime"))
-    if img_bytes:
-        new_gen_id = uuid.uuid4().hex[:8]
-        art_prompts_cache[new_gen_id] = prompt
-        art_bytes_cache[new_gen_id] = img_bytes
-
-        photo = BufferedInputFile(img_bytes, filename=f"art_{new_gen_id}.jpg")
-        kb = get_art_keyboard(new_gen_id, current_style=target_style)
-        style_label = "2D Аниме" if target_style == "anime" else "Фотореализм"
-        
-        caption_text = (
-            f"✨ <b>Новый вариант готов, сэр.</b>\n"
-            f"• <b>Стиль:</b> {style_label}\n"
-            f"• <b>Запрос:</b> {prompt}\n\n"
-            f"📋 <b>Промпт:</b> <tg-spoiler>{prompt}</tg-spoiler>"
-        )
-
-        await bot.send_photo(
-            chat_id=callback.message.chat.id,
-            photo=photo,
-            caption=caption_text,
-            parse_mode="HTML",
-            reply_markup=kb
-        )
-    else:
-        await callback.message.reply("Сервер перегружен. Повторите нажатие через пару секунд, сэр.")
-
-
-@dp.callback_query(F.data.startswith("art_hd:"))
-async def handle_art_hd(callback: types.CallbackQuery):
-    gen_id = callback.data.split(":")[1]
-    img_bytes = art_bytes_cache.get(gen_id)
-
-    if not img_bytes:
-        await callback.answer("Файл в HD устарел или был вытеснен из кэша.", show_alert=True)
-        return
-
-    await callback.answer("Отправляю несжатый оригинал...")
-    doc = BufferedInputFile(img_bytes, filename=f"jarvis_original_{gen_id}.jpg")
-    await bot.send_document(
-        chat_id=callback.message.chat.id,
-        document=doc,
-        caption="Оригинальный файл в максимальном разрешении без сжатия Telegram, сэр."
-    )
-
-
-@dp.callback_query(F.data.startswith("art_surprise:"))
-async def handle_art_surprise_button(callback: types.CallbackQuery):
-    current_style = callback.data.split(":")[1]
-    await callback.answer("Генерирую случайную славянскую сцену...")
-
-    surprise_prompt, clean_desc = generate_random_surprise_prompt()
-    await bot.send_chat_action(chat_id=callback.message.chat.id, action=ChatAction.UPLOAD_PHOTO)
-
-    img_bytes = await generate_infinite_nsfw(surprise_prompt, is_anime=(current_style == "anime"))
-    if img_bytes:
-        new_gen_id = uuid.uuid4().hex[:8]
-        art_prompts_cache[new_gen_id] = surprise_prompt
-        art_bytes_cache[new_gen_id] = img_bytes
-
-        photo = BufferedInputFile(img_bytes, filename=f"art_{new_gen_id}.jpg")
-        kb = get_art_keyboard(new_gen_id, current_style=current_style)
-        
-        caption_text = (
-            f"🎲 <b>Случайный сценарий Джарвиса:</b>\n"
-            f"• <b>Концепт:</b> {clean_desc}\n\n"
-            f"📋 <b>Промпт:</b> <tg-spoiler>{surprise_prompt}</tg-spoiler>"
-        )
-
-        await bot.send_photo(
-            chat_id=callback.message.chat.id,
-            photo=photo,
-            caption=caption_text,
-            parse_mode="HTML",
-            reply_markup=kb
-        )
-    else:
-        await callback.message.reply("Сбой узла рендеринга. Повторите попытку, сэр.")
-
-
-@dp.callback_query(F.data.startswith("art_delete:"))
-async def handle_art_delete(callback: types.CallbackQuery):
-    try:
-        await callback.message.delete()
-        await callback.answer("Арт успешно удален.")
-    except Exception:
-        await callback.answer("Не удалось удалить сообщение.", show_alert=True)
-
-
-@dp.callback_query(F.data == "jarvis_unmute_direct")
+# --- CALLBACK ОБРАБОТЧИК ---
+@dp.callback_query(F.data == "ayakoji_unmute_direct")
 async def handle_unmute(callback: types.CallbackQuery):
     chat_id = callback.message.chat.id
     if callback.from_user.id != OWNER_ID and OWNER_ID != 0:
@@ -1160,7 +840,7 @@ async def handle_unmute(callback: types.CallbackQuery):
     await save_settings()
     await callback.answer("Изоляция снята.")
     try:
-        await callback.message.edit_text("Ограничения для собеседника аннулированы, сэр.")
+        await callback.message.edit_text("Ограничения для собеседника аннулированы.")
     except Exception:
         pass
 
@@ -1178,11 +858,16 @@ async def handle_direct_message(message: types.Message):
     if not user_input.strip():
         return
 
+    # Проверка на 18+ (для создателя тоже, если теневой режим выключен)
+    if is_nsfw_request(user_input):
+        await send_smart_response(chat_id, "", "Запрос отклонен: обнаружен запрещенный контент.", is_direct=True)
+        return
+
     if await process_bot_command(message, user_input, is_owner=True):
         return
 
     await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-    reply = await ask_groq(user_input, chat_id, JARVIS_PROMPT_DIRECT, max_tokens=500)
+    reply = await ask_groq(user_input, chat_id, AYAKOJI_PROMPT_DIRECT, max_tokens=500)
 
     voice_triggers = ["в голосовом", "голосовым", "голосом", "скажи", "озвучь", "проговори"]
     forced_voice = any(t in user_input.lower() for t in voice_triggers)
@@ -1193,7 +878,7 @@ async def handle_direct_message(message: types.Message):
 
 @dp.business_message()
 async def handle_business_message(message: types.Message):
-    global last_owner_activity
+    global last_owner_activity, guest_requests
     chat_id = message.chat.id
     bus_id = message.business_connection_id
     msg_id = message.message_id
@@ -1204,9 +889,10 @@ async def handle_business_message(message: types.Message):
     if chat_id == bot_id or (OWNER_ID != 0 and chat_id == OWNER_ID):
         return
 
-    if msg_id in processed_message_ids:
+    msg_key = (chat_id, msg_id)
+    if msg_key in processed_message_ids:
         return
-    processed_message_ids[msg_id] = True
+    processed_message_ids[msg_key] = True
 
     is_owner = (OWNER_ID != 0 and message.from_user.id == OWNER_ID) or (message.from_user.id != chat_id)
 
@@ -1222,6 +908,22 @@ async def handle_business_message(message: types.Message):
 
     user_input, is_voice = await extract_message_content(message)
     if not user_input.strip():
+        return
+
+    # Секретарь: если владелец в фокусе или офлайн
+    if focus_until > 0 and time.time() < focus_until:
+        guest_requests.append({
+            "name": message.from_user.full_name,
+            "username": f"@{message.from_user.username}" if message.from_user.username else "none",
+            "text": user_input,
+            "time": datetime.datetime.now().strftime("%d.%m %H:%M")
+        })
+        await save_guest_requests()
+        await send_smart_response(
+            chat_id, bus_id, 
+            "Создатель сейчас в режиме глубокой концентрации. Я передал ваше сообщение секретарю.", 
+            is_direct=False
+        )
         return
 
     business_visits[str(chat_id)] = {
@@ -1251,15 +953,24 @@ async def handle_business_message(message: types.Message):
     if await check_chat_flood(chat_id, bus_id):
         return
 
+    # ГЛАВНАЯ ЗАЩИТА 18+ ДЛЯ ГОСТЕЙ
+    if is_nsfw_request(user_input):
+        await send_smart_response(
+            chat_id, bus_id, 
+            "Извините, я не обсуждаю темы 18+ с посторонними. Давайте поговорим о чем-то другом.", 
+            is_direct=False
+        )
+        return
+
     await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING, business_connection_id=bus_id)
-    reply = await ask_groq(user_input, chat_id, JARVIS_PROMPT_GUEST, max_tokens=220)
+    reply = await ask_groq(user_input, chat_id, AYAKOJI_PROMPT_GUEST, max_tokens=220)
     should_voice = is_voice or voice_chat_modes.get(chat_id, False) or (random.random() < 0.20)
     await send_smart_response(chat_id, bus_id, reply, is_direct=False, send_as_voice=should_voice)
 
 
-# --- ФОНОВЫЕ СЛУЖБЫ: АВТО-БРИФИНГ В 09:00 И НАПОМИНАНИЯ ---
+# --- ФОНОВЫЕ СЛУЖБЫ ---
 async def cleaner_and_reminders_task():
-    global reminders_list, last_auto_briefing_date
+    global reminders_list, last_auto_briefing_date, focus_until
     while True:
         try:
             await asyncio.sleep(5)
@@ -1267,20 +978,22 @@ async def cleaner_and_reminders_task():
             now_dt = datetime.datetime.now()
             today_date = now_dt.strftime("%Y-%m-%d")
 
-            # Автоматический брифинг в 09:00 утра для хозяина
+            if focus_until > 0 and now > focus_until:
+                focus_until = 0.0
+                if OWNER_ID != 0:
+                    await send_smart_response(OWNER_ID, "", "Режим фокуса завершен. Я снова на связи, сэр.", is_direct=True)
+
             if now_dt.hour == 9 and now_dt.minute == 0 and last_auto_briefing_date != today_date and OWNER_ID != 0:
                 last_auto_briefing_date = today_date
-                briefing_msg = build_daily_briefing()
+                briefing_msg = await build_daily_briefing()
                 await send_smart_response(OWNER_ID, "", briefing_msg, is_direct=True, send_as_voice=True)
 
-            # Очистка мутов
             expired_mutes = [cid for cid, exp in muted_chats.items() if exp != float('inf') and now >= exp]
             if expired_mutes:
                 for cid in expired_mutes:
                     muted_chats.pop(cid, None)
                 await save_settings()
 
-            # Обработка напоминаний
             remaining, triggered = [], []
             for r in reminders_list:
                 (triggered if now >= r.get("time", 0) else remaining).append(r)
@@ -1289,7 +1002,8 @@ async def cleaner_and_reminders_task():
                 reminders_list = remaining
                 await save_reminders()
                 for rem in triggered:
-                    text = f"Сэр, сработал протокол хронометража!\nНапоминание: <b>{rem.get('text')}</b>"
+                    ctx = rem.get("context", "")
+                    text = f"Сработал протокол хронометража.\nНапоминание: <b>{rem.get('text')}</b>{ctx}"
                     await send_smart_response(rem["chat_id"], rem.get("bus_id", ""), text, is_direct=not bool(rem.get("bus_id")), send_as_voice=True)
 
         except asyncio.CancelledError:
@@ -1299,7 +1013,7 @@ async def cleaner_and_reminders_task():
 
 
 async def handle_ping(request):
-    return web.Response(text="Jarvis Core status: Online and functional.")
+    return web.Response(text="Ayakoji Core status: Online and functional.")
 
 
 async def setup_web_app():
@@ -1325,7 +1039,7 @@ async def main():
 
     try:
         await bot.delete_webhook(drop_pending_updates=True)
-        logger.info(f"Джарвис онлайн. Движок: Flux Realism HQ (Славянский фокус). Брифинг: 09:00. Голос: {'Fish Audio' if FISH_AUDIO_API_KEY else 'Edge-TTS'}")
+        logger.info(f"Аякоджи онлайн. Стиль: Умный/Эстетичный. Защита 18+: ВКЛ.")
         await dp.start_polling(bot)
     except TelegramConflictError:
         logger.critical("Запущен дубликат бота!")
@@ -1341,4 +1055,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        logger.info("Работа систем Джарвиса остановлена.")
+        logger.info("Работа систем Аякоджи остановлена.")
