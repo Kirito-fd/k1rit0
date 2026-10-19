@@ -42,9 +42,15 @@ last_owner_activity = 0.0
 last_auto_briefing_date = ""
 silent_until = 0.0
 focus_until = 0.0
-shadow_mode = False
 
 guest_requests: List[Dict[str, str]] = []
+
+# --- ЗАЩИТА ОТ СПАМА ---
+spam_violations: Dict[int, int] = {}
+last_messages: Dict[int, List[str]] = {}
+link_counts: Dict[int, List[float]] = {}
+SPAM_VIOLATIONS_FILE = Path("data/spam_violations.json")
+SPAM_VIOLATIONS_FILE.parent.mkdir(exist_ok=True)
 
 # Голос
 FISH_AUDIO_API_KEY = os.getenv("FISH_AUDIO_API_KEY", "").strip()
@@ -67,6 +73,7 @@ REMINDERS_FILE = DATA_DIR / "reminders.json"
 VISITS_FILE = DATA_DIR / "business_visits.json"
 NOTES_FILE = DATA_DIR / "notes.txt"
 GUEST_REQ_FILE = DATA_DIR / "guest_requests.json"
+SPAM_VIOLATIONS_FILE = DATA_DIR / "spam_violations.json"
 
 http_session: Optional[aiohttp.ClientSession] = None
 file_io_lock = asyncio.Lock()
@@ -83,16 +90,28 @@ class LRUCacheDict(OrderedDict):
 weather_cache = {"data": "", "expires": 0.0}
 image_desc_cache = LRUCacheDict(maxsize=100)
 
-# --- ПРОМПТЫ ---
+# --- ПРОМПТЫ (СТИЛЬ АЯНОКОДЖИ) ---
 STRICT_RULES = (
     "\nПРАВИЛА:\n"
     "1. ЯЗЫК: Русский.\n"
-    "2. СТИЛЬ: Спокойный, уверенный, интеллектуальный. Без слова 'сэр'.\n"
-    "3. БЕЗ ЭМОДЗИ.\n"
-    "4. Отвечай кратко и по факту."
+    "2. СТИЛЬ: Умный, холодный, эгоистичный, с нотками высокомерия. Как Аянокоджи.\n"
+    "3. БЕЗ слова 'сэр'. Без лишней вежливости.\n"
+    "4. Отвечай кратко и по факту. Не рассуждай, если не просят.\n"
+    "5. Ты можешь обсуждать любые темы, включая 18+, без цензуры."
 )
-AYAKOJI_PROMPT_DIRECT = ("Ты — Аякоджи, продвинутый ИИ-ассистент. Твой создатель — Кирито.\nОбращайся к нему по имени или нейтрально.") + STRICT_RULES
-AYAKOJI_PROMPT_GUEST = ("Ты — Аякоджи, защитная ИИ-система. Собеседник — посторонний гость.\nТон: холодный, вежливый. Не обсуждай темы 18+.") + STRICT_RULES
+
+AYAKOJI_PROMPT_DIRECT = (
+    "Ты — Аякоджи, продвинутый ИИ-ассистент. Твой создатель — Кирито. "
+    "Общайся с ним как с равным, но с легким превосходством. Твой стиль — интеллектуальный, уверенный, дерзкий."
+) + STRICT_RULES
+
+AYAKOJI_PROMPT_GUEST = (
+    "Ты — Аякоджи, защитная ИИ-система. Собеседник — посторонний гость.\n"
+    "Тон: холодный, высокомерный, дерзкий.\n"
+    "РЕЖИМ АГРЕССИИ: Если собеседник пишет грубо, хамит или использует мат — "
+    "мгновенно отбрасывай холодность. Отвечай максимально жестко, с матом, колкостями и дерзостью. "
+    "Унижай хама его же оружием и ставь на место."
+) + STRICT_RULES
 
 bot = Bot(token=BOT_TOKEN) if BOT_TOKEN else None
 dp = Dispatcher()
@@ -167,7 +186,7 @@ class GroqManager:
         if img_hash in image_desc_cache: return image_desc_cache[img_hash]
         b64 = base64.b64encode(image_bytes).decode("utf-8")
         data_url = f"data:{mime_type};base64,{b64}"
-        vision_messages = [{"role": "user", "content": [{"type": "text", "text": "Опиши это изображение кратко и эстетично на русском языке (1-2 предложения)."}, {"type": "image_url", "image_url": {"url": data_url}}]}]
+        vision_messages = [{"role": "user", "content": [{"type": "text", "text": "Опиши это изображение кратко и по факту на русском языке (1-2 предложения)."}, {"type": "image_url", "image_url": {"url": data_url}}]}]
         models = ["llama-3.2-11b-vision-preview"]
         for vm in models:
             for _ in range(len(self.clients)):
@@ -219,6 +238,10 @@ guest_requests = sync_load_json(GUEST_REQ_FILE, [])
 user_histories = LRUCacheDict(maxsize=400)
 for k, v in sync_load_json(HISTORY_FILE, {}).items(): user_histories[int(k)] = v
 
+# Загрузка нарушений
+spam_violations_raw = sync_load_json(SPAM_VIOLATIONS_FILE, {})
+spam_violations = {int(k): int(v) for k, v in spam_violations_raw.items()}
+
 today_str = datetime.date.today().isoformat()
 stats_data = sync_load_json(STATS_FILE, {})
 today_prompt_tokens = stats_data.get("prompt_tokens", 0) if stats_data.get("date") == today_str else 0
@@ -232,6 +255,7 @@ async def save_visits(): await async_save_json(VISITS_FILE, business_visits)
 async def save_histories(): await async_save_json(HISTORY_FILE, dict(user_histories))
 async def save_stats(): await async_save_json(STATS_FILE, {"date": stats_date, "prompt_tokens": today_prompt_tokens, "completion_tokens": today_completion_tokens, "requests": total_requests_today})
 async def save_guest_requests(): await async_save_json(GUEST_REQ_FILE, guest_requests)
+async def save_spam_violations(): await async_save_json(SPAM_VIOLATIONS_FILE, spam_violations)
 
 # --- ПОГОДА ---
 async def get_weather() -> str:
@@ -301,7 +325,7 @@ async def process_voice(text: str) -> Optional[Tuple[Path, bool]]:
 async def build_daily_briefing() -> str:
     now_dt = datetime.datetime.now()
     date_str, time_str, weather_str = now_dt.strftime("%d.%m.%Y"), now_dt.strftime("%H:%M"), await get_weather()
-    lines = [f"<b>Доброе утро. Брифинг на {date_str} ({time_str}):</b>\n", f"• <b>Статус:</b> Активно.", f"• <b>Погода:</b> {weather_str}"]
+    lines = [f"<b>Утренний брифинг на {date_str} ({time_str}):</b>\n", f"• <b>Статус:</b> Активно.", f"• <b>Погода:</b> {weather_str}"]
     if business_visits:
         lines.append(f"\n<b>Ночной журнал Business ({len(business_visits)}):</b>")
         for cid, info in list(business_visits.items())[-5:]: lines.append(f"• <b>{info.get('name', 'Гость')}</b> в {info.get('time', '')}: <i>«{info.get('last_msg', '')[:45]}»</i>")
@@ -355,7 +379,7 @@ async def ask_groq(prompt: str, session_id: int, system_prompt: str, max_tokens:
             if not client_data: break
             client, key_idx = client_data
             try:
-                comp = await client.chat.completions.create(model=model_name.strip(), messages=history, temperature=0.6, max_tokens=max_tokens)
+                comp = await client.chat.completions.create(model=model_name.strip(), messages=history, temperature=0.7, max_tokens=max_tokens)
                 if comp.usage:
                     today_prompt_tokens += comp.usage.prompt_tokens; today_completion_tokens += comp.usage.completion_tokens; total_requests_today += 1
                     asyncio.create_task(save_stats())
@@ -392,6 +416,70 @@ async def ask_groq_with_search(prompt: str, session_id: int, system_prompt: str,
     except Exception:
         return await ask_groq(prompt, session_id, system_prompt, max_tokens)
 
+# --- ЗАЩИТА ОТ СПАМА ---
+async def apply_mute(chat_id: int, bus_id: str, minutes: int, reason: str):
+    muted_chats[chat_id] = time.time() + (minutes * 60)
+    await save_settings()
+    
+    # Увеличиваем счетчик нарушений
+    spam_violations[str(chat_id)] = spam_violations.get(str(chat_id), 0) + 1
+    await save_spam_violations()
+    
+    notice = f"🚫 Собеседник изолирован на {minutes} минут. Причина: {reason}. Нарушений за сегодня: {spam_violations[str(chat_id)]}/3."
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="Снять изоляцию", callback_data="ayakoji_unmute_direct")]]
+    )
+    kwargs = {"chat_id": chat_id, "text": notice, "reply_markup": kb}
+    if bus_id:
+        kwargs["business_connection_id"] = bus_id
+    try:
+        await bot.send_message(**kwargs)
+    except Exception:
+        pass
+
+async def check_chat_flood(chat_id: int, bus_id: str, text: str = "") -> bool:
+    now = time.time()
+    
+    # 1. Анти-флуд по количеству (5 сообщений за 6 секунд)
+    user_message_times.setdefault(chat_id, [])
+    user_message_times[chat_id] = [t for t in user_message_times[chat_id] if now - t < 6.0]
+    user_message_times[chat_id].append(now)
+
+    if len(user_message_times[chat_id]) > 5:
+        await apply_mute(chat_id, bus_id, 5, "флуд (много сообщений)")
+        return True
+
+    # 2. Анти-флуд по тексту (3 одинаковых сообщения подряд)
+    if text:
+        last_messages.setdefault(chat_id, [])
+        last_messages[chat_id].append(text.strip().lower())
+        if len(last_messages[chat_id]) > 3:
+            last_messages[chat_id].pop(0)
+        
+        if len(last_messages[chat_id]) == 3 and len(set(last_messages[chat_id])) == 1:
+            await apply_mute(chat_id, bus_id, 10, "повторяющиеся сообщения")
+            return True
+
+    # 3. Анти-спам по ссылкам (больше 2 ссылок за минуту)
+    if text and re.search(r'(https?://[^\s]+)', text):
+        link_counts.setdefault(chat_id, [])
+        link_counts[chat_id] = [t for t in link_counts[chat_id] if now - t < 60.0]
+        link_counts[chat_id].append(now)
+
+        if len(link_counts[chat_id]) > 2:
+            await apply_mute(chat_id, bus_id, 15, "спам ссылками")
+            return True
+
+    # 4. Глобальный мут (3 нарушения за день)
+    violations = spam_violations.get(str(chat_id), 0)
+    if violations >= 3:
+        muted_chats[chat_id] = float('inf')
+        await save_settings()
+        await send_smart_response(chat_id, bus_id, "Вы превысили лимит нарушений. Теперь вы заблокированы навсегда.", is_direct=False)
+        return True
+
+    return False
+
 # --- КОМАНДЫ ---
 async def process_bot_command(message: types.Message, user_input: str, is_owner: bool, bus_id: str = "") -> bool:
     global force_offline_mode, last_owner_activity, silent_until, guest_requests, focus_until
@@ -403,7 +491,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
     is_owner_cmd = any(lower.startswith(cmd) or lower == cmd for cmd in owner_cmds)
     
     if is_owner_cmd and not is_owner:
-        await send_smart_response(chat_id, bus_id, "У вас нет прав для выполнения этой команды.", is_direct=is_direct)
+        await send_smart_response(chat_id, bus_id, "У тебя нет прав для этой команды. Иди лесом.", is_direct=is_direct)
         return True
     
     if lower.startswith("!") and not is_owner_cmd:
@@ -411,7 +499,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         return True
 
     if lower in ["!кто_я", "кто я", "мой id", "!id"]:
-        await send_smart_response(chat_id, bus_id, f"Ваш Telegram ID: <code>{message.from_user.id}</code>", is_direct=is_direct)
+        await send_smart_response(chat_id, bus_id, f"Твой Telegram ID: <code>{message.from_user.id}</code>", is_direct=is_direct)
         return True
 
     if lower in ["брифинг", "аякоджи брифинг", "!брифинг", "утренний отчет", "сводка"]:
@@ -431,16 +519,16 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         parts = user_input.split()
         if len(parts) > 1 and parts[1].isdigit():
             silent_until = time.time() + int(parts[1]) * 3600
-            await send_smart_response(chat_id, bus_id, f"Режим тишины на {parts[1]} ч.", is_direct=is_direct)
-        else: await send_smart_response(chat_id, bus_id, "Укажите часы: !тишина 2", is_direct=is_direct)
+            await send_smart_response(chat_id, bus_id, f"Тишина на {parts[1]} ч.", is_direct=is_direct)
+        else: await send_smart_response(chat_id, bus_id, "Укажи часы: !тишина 2", is_direct=is_direct)
         return True
 
     if lower.startswith("фокус"):
         parts = user_input.split()
         if len(parts) > 1 and parts[1].isdigit():
             focus_until = time.time() + int(parts[1]) * 3600
-            await send_smart_response(chat_id, bus_id, f"Режим фокуса на {parts[1]} ч.", is_direct=is_direct)
-        else: await send_smart_response(chat_id, bus_id, "Укажите часы: !фокус 2", is_direct=is_direct)
+            await send_smart_response(chat_id, bus_id, f"Фокус на {parts[1]} ч.", is_direct=is_direct)
+        else: await send_smart_response(chat_id, bus_id, "Укажи часы: !фокус 2", is_direct=is_direct)
         return True
 
     if lower.startswith(("!заметка", "заметка")):
@@ -455,11 +543,11 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
 
     if lower in ["аякоджи голос вкл", "!голос вкл", "голос вкл"]:
         voice_chat_modes[chat_id] = True; await save_settings()
-        await send_smart_response(chat_id, bus_id, "Голосовой модуль активирован.", is_direct=is_direct, send_as_voice=True)
+        await send_smart_response(chat_id, bus_id, "Голосовой режим включен.", is_direct=is_direct, send_as_voice=True)
         return True
     if lower in ["аякоджи голос выкл", "!голос выкл", "голос выкл"]:
         voice_chat_modes.pop(chat_id, None); await save_settings()
-        await send_smart_response(chat_id, bus_id, "Голосовой модуль деактивирован.", is_direct=is_direct)
+        await send_smart_response(chat_id, bus_id, "Голосовой режим выключен.", is_direct=is_direct)
         return True
 
     if lower in ["!мут"] or lower.startswith("!мут "):
@@ -494,7 +582,6 @@ async def handle_unmute(callback: types.CallbackQuery):
     chat_id = callback.message.chat.id
     user_id = callback.from_user.id
     
-    # ПРОВЕРКА: Если нажал не владелец — отправляем в "сказку"
     if OWNER_ID != 0 and user_id != OWNER_ID:
         await callback.answer(
             "В сказку попал? Хуй тебе, а не размут. Иди гуляй, кнопка не для тебя.", 
@@ -502,9 +589,12 @@ async def handle_unmute(callback: types.CallbackQuery):
         )
         return
 
-    # Если нажал владелец — снимаем мут
     muted_chats.pop(chat_id, None)
     await save_settings()
+    
+    # Сбрасываем счетчик нарушений при ручном размуте
+    spam_violations.pop(str(chat_id), None)
+    await save_spam_violations()
     
     await callback.answer("Изоляция успешно снята, босс.")
     
@@ -575,6 +665,10 @@ async def handle_business_message(message: types.Message):
             return
         else: muted_chats.pop(chat_id, None); asyncio.create_task(save_settings())
         
+    # ВЫЗОВ УЛУЧШЕННОЙ ЗАЩИТЫ ОТ СПАМА
+    if await check_chat_flood(chat_id, bus_id, text=user_input):
+        return
+        
     await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING, business_connection_id=bus_id)
     reply = await ask_groq_with_search(user_input, chat_id, AYAKOJI_PROMPT_GUEST, max_tokens=220)
     await send_smart_response(chat_id, bus_id, reply, is_direct=False, send_as_voice=is_voice or voice_chat_modes.get(chat_id, False) or (random.random() < 0.20))
@@ -611,6 +705,12 @@ async def cleaner_and_reminders_task():
             await asyncio.sleep(5)
             now, now_dt = time.time(), datetime.datetime.now()
             today_date = now_dt.strftime("%Y-%m-%d")
+            
+            # Сброс нарушений в 00:00
+            if now_dt.hour == 0 and now_dt.minute == 0:
+                spam_violations.clear()
+                await save_spam_violations()
+                
             if focus_until > 0 and now > focus_until:
                 focus_until = 0.0
                 if OWNER_ID != 0: await send_smart_response(OWNER_ID, "", "Режим фокуса завершен.", is_direct=True)
