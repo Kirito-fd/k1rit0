@@ -273,20 +273,32 @@ async def get_weather() -> str:
     except Exception as e: logger.error(f"Weather error: {e}")
     return "Данные о погоде временно недоступны."
 
-# --- ГОЛОС ---
+# --- ГОЛОС (С ОТЛАДКОЙ) ---
 async def generate_with_fish_audio(text: str, output_path: Path) -> bool:
-    if not FISH_AUDIO_API_KEY or not http_session: return False
+    if not FISH_AUDIO_API_KEY or not http_session: 
+        logger.warning("Fish Audio: нет ключа или сессии.")
+        return False
+    
     url = "https://api.fish.audio/v1/tts"
     headers = {"Authorization": f"Bearer {FISH_AUDIO_API_KEY}", "Content-Type": "application/json"}
     payload = {"text": text, "format": "mp3"}
-    if FISH_AUDIO_VOICE_ID: payload["reference_id"] = FISH_AUDIO_VOICE_ID
+    if FISH_AUDIO_VOICE_ID: 
+        payload["reference_id"] = FISH_AUDIO_VOICE_ID
+    
     try:
         async with http_session.post(url, json=payload, headers=headers, timeout=20) as resp:
             if resp.status == 200:
-                with open(output_path, "wb") as f: f.write(await resp.read())
+                with open(output_path, "wb") as f: 
+                    f.write(await resp.read())
+                logger.info("Fish Audio: успешно сгенерировано.")
                 return True
-    except Exception as e: logger.error(f"Fish Audio Error: {e}")
-    return False
+            else:
+                error_text = await resp.text()
+                logger.error(f"Fish Audio ERROR {resp.status}: {error_text}")
+                return False
+    except Exception as e: 
+        logger.error(f"Fish Audio Exception: {e}")
+        return False
 
 async def process_voice(text: str) -> Optional[Tuple[Path, bool]]:
     clean_text = re.sub(r"<[^>]+>", "", text).strip()
@@ -297,7 +309,8 @@ async def process_voice(text: str) -> Optional[Tuple[Path, bool]]:
     final_ogg = Path(tempfile.gettempdir()) / f"ayakoji_{uid}.ogg"
     
     success = False
-    if FISH_AUDIO_API_KEY: success = await generate_with_fish_audio(clean_text, raw_audio)
+    if FISH_AUDIO_API_KEY: 
+        success = await generate_with_fish_audio(clean_text, raw_audio)
         
     if not success:
         try:
@@ -479,23 +492,40 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
     lower = user_input.lower().strip()
     is_direct = not bool(bus_id)
 
-    # СПИСОК ВСЕХ КОМАНД
     owner_cmds = ["брифинг", "!брифинг", "сводка", "сводка гостей", "!гости", "кто писал", "тишина", "!заметка", "заметка", "!статус", "статус", "!онлайн", "!офлайн", "!сброс", "сброс", "!мут", "!размут", "аякоджи отчет", "отчет", "визиты", "фокус"]
     is_owner_cmd = any(lower.startswith(cmd) or lower == cmd for cmd in owner_cmds)
     
-    # 1. ПРОВЕРКА ПРАВ
     if is_owner_cmd and not is_owner:
         await send_smart_response(chat_id, bus_id, "У тебя нет прав для этой команды. Иди лесом.", is_direct=is_direct)
         return True
     
-    # 2. НЕИЗВЕСТНАЯ КОМАНДА
     if lower.startswith("!") and not is_owner_cmd:
         await send_smart_response(chat_id, bus_id, "Команда не распознана.", is_direct=is_direct)
         return True
 
-    # 3. ОСНОВНЫЕ КОМАНДЫ
     if lower in ["!кто_я", "кто я", "мой id", "!id"]:
         await send_smart_response(chat_id, bus_id, f"Твой Telegram ID: <code>{message.from_user.id}</code>", is_direct=is_direct)
+        return True
+
+    if lower in ["!сброс", "сброс"]:
+        if is_owner:
+            user_histories.pop(chat_id, None)
+            await save_histories()
+            await send_smart_response(chat_id, bus_id, "Память диалога очищена.", is_direct=is_direct)
+        return True
+
+    if lower in ["!статус", "статус"]:
+        if is_owner:
+            models = await groq_mgr.get_active_models()
+            primary_m = models[0] if models else "LLaMA-3.3"
+            status_msg = (
+                f"<b>Диагностика:</b>\n"
+                f"• Модель: {primary_m}\n"
+                f"• Ключей Groq: {len(GROQ_KEYS)}\n"
+                f"• Напоминаний: {len(reminders_list)}\n"
+                f"• Fish Audio: {'ВКЛ' if FISH_AUDIO_API_KEY else 'ВЫКЛ'}"
+            )
+            await send_smart_response(chat_id, bus_id, status_msg, is_direct=is_direct)
         return True
 
     if lower in ["брифинг", "аякоджи брифинг", "!брифинг", "утренний отчет", "сводка"]:
@@ -574,6 +604,30 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
 
     return False
 
+@dp.callback_query(F.data == "ayakoji_unmute_direct")
+async def handle_unmute(callback: types.CallbackQuery):
+    chat_id = callback.message.chat.id
+    user_id = callback.from_user.id
+    
+    if OWNER_ID != 0 and user_id != OWNER_ID:
+        await callback.answer(
+            "В сказку попал? Хуй тебе, а не размут. Иди гуляй, кнопка не для тебя.", 
+            show_alert=True
+        )
+        return
+
+    muted_chats.pop(chat_id, None)
+    await save_settings()
+    spam_violations.pop(str(chat_id), None)
+    await save_spam_violations()
+    
+    await callback.answer("Изоляция успешно снята, босс.")
+    
+    try:
+        await callback.message.edit_text("Протокол безопасности отменен. Собеседник разблокирован.", reply_markup=None)
+    except Exception:
+        pass
+
 # --- ОБРАБОТЧИКИ ---
 @dp.message(F.business_connection_id.is_(None))
 async def handle_direct_message(message: types.Message):
@@ -585,7 +639,6 @@ async def handle_direct_message(message: types.Message):
     user_input, is_voice = await extract_message_content(message)
     if not user_input.strip(): return
     
-    # ВАЖНО: Сначала проверяем команды, потом идем в ИИ
     if await process_bot_command(message, user_input, is_owner=True): return
     
     await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
