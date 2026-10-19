@@ -54,7 +54,7 @@ OFFICIAL_PITCH = "+0Hz"
 OFFICIAL_RATE = "+10%"
 HAS_FFMPEG = shutil.which("ffmpeg") is not None
 
-# Ключи Groq (ищет GROQ_API_KEY, GROQ_API_KEY1 и т.д.)
+# Ключи Groq
 GROQ_KEYS = [val.strip() for key, val in sorted(os.environ.items()) if key.startswith("GROQ_API_KEY") and val.strip()]
 
 # Пути к файлам
@@ -402,12 +402,10 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
     owner_cmds = ["брифинг", "!брифинг", "сводка", "сводка гостей", "!гости", "кто писал", "тишина", "!заметка", "заметка", "!статус", "статус", "!онлайн", "!офлайн", "!сброс", "сброс", "!мут", "!размут", "аякоджи отчет", "отчет", "визиты", "фокус"]
     is_owner_cmd = any(lower.startswith(cmd) or lower == cmd for cmd in owner_cmds)
     
-    # Если команда, но не владелец
     if is_owner_cmd and not is_owner:
         await send_smart_response(chat_id, bus_id, "У вас нет прав для выполнения этой команды.", is_direct=is_direct)
         return True
     
-    # Если неизвестная команда
     if lower.startswith("!") and not is_owner_cmd:
         await send_smart_response(chat_id, bus_id, "Команда не распознана.", is_direct=is_direct)
         return True
@@ -416,7 +414,6 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         await send_smart_response(chat_id, bus_id, f"Ваш Telegram ID: <code>{message.from_user.id}</code>", is_direct=is_direct)
         return True
 
-    # --- ТУТ ТЕПЕРЬ ЕСТЬ ВСЕ КОМАНДЫ ---
     if lower in ["брифинг", "аякоджи брифинг", "!брифинг", "утренний отчет", "сводка"]:
         await send_smart_response(chat_id, bus_id, await build_daily_briefing(), is_direct=is_direct, send_as_voice=True)
         return True
@@ -492,6 +489,30 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
 
     return False
 
+@dp.callback_query(F.data == "ayakoji_unmute_direct")
+async def handle_unmute(callback: types.CallbackQuery):
+    chat_id = callback.message.chat.id
+    user_id = callback.from_user.id
+    
+    # ПРОВЕРКА: Если нажал не владелец — отправляем в "сказку"
+    if OWNER_ID != 0 and user_id != OWNER_ID:
+        await callback.answer(
+            "В сказку попал? Хуй тебе, а не размут. Иди гуляй, кнопка не для тебя.", 
+            show_alert=True
+        )
+        return
+
+    # Если нажал владелец — снимаем мут
+    muted_chats.pop(chat_id, None)
+    await save_settings()
+    
+    await callback.answer("Изоляция успешно снята, босс.")
+    
+    try:
+        await callback.message.edit_text("Протокол безопасности отменен. Собеседник разблокирован.", reply_markup=None)
+    except Exception:
+        pass
+
 # --- ОБРАБОТЧИКИ ---
 @dp.message(F.business_connection_id.is_(None))
 async def handle_direct_message(message: types.Message):
@@ -519,7 +540,8 @@ async def handle_business_message(message: types.Message):
     if not message.from_user or message.from_user.is_bot or message.from_user.id == bot_id: return
     if chat_id == bot_id or (OWNER_ID != 0 and chat_id == OWNER_ID): return
     msg_key = (chat_id, msg_id)
-    if msg_key in processed_message_ids: return    processed_message_ids[msg_key] = True
+    if msg_key in processed_message_ids: return
+    processed_message_ids[msg_key] = True
     
     is_owner = (OWNER_ID != 0 and message.from_user.id == OWNER_ID)
     if is_owner:
