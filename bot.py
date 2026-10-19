@@ -42,10 +42,11 @@ last_owner_activity = 0.0
 last_auto_briefing_date = ""
 silent_until = 0.0
 focus_until = 0.0
+shadow_mode = False
 
 guest_requests: List[Dict[str, str]] = []
 
-# --- ГОЛОС ---
+# Голос
 FISH_AUDIO_API_KEY = os.getenv("FISH_AUDIO_API_KEY", "").strip()
 FISH_AUDIO_VOICE_ID = os.getenv("FISH_AUDIO_VOICE_ID", "").strip()
 OFFICIAL_VOICE = "ru-RU-DmitryNeural"
@@ -53,11 +54,8 @@ OFFICIAL_PITCH = "+0Hz"
 OFFICIAL_RATE = "+10%"
 HAS_FFMPEG = shutil.which("ffmpeg") is not None
 
-# --- КЛЮЧИ GROQ (ИСПРАВЛЕНО: Ловит и GROQ_API_KEY, и GROQ_API_KEY1) ---
-GROQ_KEYS = [
-    val.strip() for key, val in sorted(os.environ.items())
-    if key.startswith("GROQ_API_KEY") and val.strip()
-]
+# Ключи Groq (ищет GROQ_API_KEY, GROQ_API_KEY1 и т.д.)
+GROQ_KEYS = [val.strip() for key, val in sorted(os.environ.items()) if key.startswith("GROQ_API_KEY") and val.strip()]
 
 # Пути к файлам
 DATA_DIR = Path("data")
@@ -89,7 +87,7 @@ image_desc_cache = LRUCacheDict(maxsize=100)
 STRICT_RULES = (
     "\nПРАВИЛА:\n"
     "1. ЯЗЫК: Русский.\n"
-    "2. СТИЛЬ: Спокойный, уверенный, интеллектуальный. Без лишней вежливости и без слова 'сэр'.\n"
+    "2. СТИЛЬ: Спокойный, уверенный, интеллектуальный. Без слова 'сэр'.\n"
     "3. БЕЗ ЭМОДЗИ.\n"
     "4. Отвечай кратко и по факту."
 )
@@ -254,7 +252,7 @@ async def get_weather() -> str:
     except Exception as e: logger.error(f"Weather error: {e}")
     return "Данные о погоде временно недоступны."
 
-# --- ГОЛОС (FISH AUDIO + EDGE-TTS) ---
+# --- ГОЛОС ---
 async def generate_with_fish_audio(text: str, output_path: Path) -> bool:
     if not FISH_AUDIO_API_KEY or not http_session: return False
     url = "https://api.fish.audio/v1/tts"
@@ -278,17 +276,14 @@ async def process_voice(text: str) -> Optional[Tuple[Path, bool]]:
     final_ogg = Path(tempfile.gettempdir()) / f"ayakoji_{uid}.ogg"
     
     success = False
-    if FISH_AUDIO_API_KEY:
-        success = await generate_with_fish_audio(clean_text, raw_audio)
+    if FISH_AUDIO_API_KEY: success = await generate_with_fish_audio(clean_text, raw_audio)
         
     if not success:
         try:
             communicate = edge_tts.Communicate(clean_text, OFFICIAL_VOICE, pitch=OFFICIAL_PITCH, rate=OFFICIAL_RATE)
             await communicate.save(str(raw_audio))
             success = raw_audio.exists() and raw_audio.stat().st_size > 0
-        except Exception as e:
-            logger.error(f"Edge-TTS Error: {e}")
-            return None
+        except Exception as e: logger.error(f"Edge-TTS Error: {e}"); return None
             
     if not success or not raw_audio.exists(): return None
     if HAS_FFMPEG:
@@ -306,14 +301,13 @@ async def process_voice(text: str) -> Optional[Tuple[Path, bool]]:
 async def build_daily_briefing() -> str:
     now_dt = datetime.datetime.now()
     date_str, time_str, weather_str = now_dt.strftime("%d.%m.%Y"), now_dt.strftime("%H:%M"), await get_weather()
-    lines = [f"<b>Доброе утро. Ежедневный брифинг на {date_str} ({time_str}):</b>\n", f"• <b>Статус ядра Ayakoji:</b> Активно.", f"• <b>Погода за окном:</b> {weather_str}"]
+    lines = [f"<b>Доброе утро. Брифинг на {date_str} ({time_str}):</b>\n", f"• <b>Статус:</b> Активно.", f"• <b>Погода:</b> {weather_str}"]
     if business_visits:
         lines.append(f"\n<b>Ночной журнал Business ({len(business_visits)}):</b>")
         for cid, info in list(business_visits.items())[-5:]: lines.append(f"• <b>{info.get('name', 'Гость')}</b> в {info.get('time', '')}: <i>«{info.get('last_msg', '')[:45]}»</i>")
-    else: lines.append("\n• <b>Telegram Business:</b> Ночных обращений нет.")
-    if reminders_list: lines.append(f"\n• <b>Задач в календаре:</b> {len(reminders_list)} шт.")
-    else: lines.append("\n• <b>Хронометраж:</b> Напоминаний нет.")
-    if guest_requests: lines.append(f"\n• <b>Запросы от гостей:</b> {len(guest_requests)} новых. Напишите <code>!сводка гостей</code>.")
+    else: lines.append("\n• <b>Business:</b> Ночных обращений нет.")
+    if reminders_list: lines.append(f"\n• <b>Задач:</b> {len(reminders_list)} шт.")
+    if guest_requests: lines.append(f"\n• <b>Запросы гостей:</b> {len(guest_requests)} новых. Напишите <code>!сводка гостей</code>.")
     lines.append("\n<i>«Желаю продуктивного дня.»</i>")
     return "\n".join(lines)
 
@@ -408,18 +402,25 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
     owner_cmds = ["брифинг", "!брифинг", "сводка", "сводка гостей", "!гости", "кто писал", "тишина", "!заметка", "заметка", "!статус", "статус", "!онлайн", "!офлайн", "!сброс", "сброс", "!мут", "!размут", "аякоджи отчет", "отчет", "визиты", "фокус"]
     is_owner_cmd = any(lower.startswith(cmd) or lower == cmd for cmd in owner_cmds)
     
+    # Если команда, но не владелец
     if is_owner_cmd and not is_owner:
         await send_smart_response(chat_id, bus_id, "У вас нет прав для выполнения этой команды.", is_direct=is_direct)
         return True
+    
+    # Если неизвестная команда
     if lower.startswith("!") and not is_owner_cmd:
         await send_smart_response(chat_id, bus_id, "Команда не распознана.", is_direct=is_direct)
         return True
+
     if lower in ["!кто_я", "кто я", "мой id", "!id"]:
         await send_smart_response(chat_id, bus_id, f"Ваш Telegram ID: <code>{message.from_user.id}</code>", is_direct=is_direct)
         return True
+
+    # --- ТУТ ТЕПЕРЬ ЕСТЬ ВСЕ КОМАНДЫ ---
     if lower in ["брифинг", "аякоджи брифинг", "!брифинг", "утренний отчет", "сводка"]:
         await send_smart_response(chat_id, bus_id, await build_daily_briefing(), is_direct=is_direct, send_as_voice=True)
         return True
+
     if lower in ["сводка гостей", "!гости", "кто писал", "визиты"]:
         if not guest_requests: await send_smart_response(chat_id, bus_id, "Запросов от гостей нет.", is_direct=is_direct)
         else:
@@ -428,6 +429,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
             await send_smart_response(chat_id, bus_id, "\n\n".join(lines), is_direct=is_direct)
             guest_requests.clear(); await save_guest_requests()
         return True
+
     if lower.startswith("тишина"):
         parts = user_input.split()
         if len(parts) > 1 and parts[1].isdigit():
@@ -435,6 +437,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
             await send_smart_response(chat_id, bus_id, f"Режим тишины на {parts[1]} ч.", is_direct=is_direct)
         else: await send_smart_response(chat_id, bus_id, "Укажите часы: !тишина 2", is_direct=is_direct)
         return True
+
     if lower.startswith("фокус"):
         parts = user_input.split()
         if len(parts) > 1 and parts[1].isdigit():
@@ -442,6 +445,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
             await send_smart_response(chat_id, bus_id, f"Режим фокуса на {parts[1]} ч.", is_direct=is_direct)
         else: await send_smart_response(chat_id, bus_id, "Укажите часы: !фокус 2", is_direct=is_direct)
         return True
+
     if lower.startswith(("!заметка", "заметка")):
         note_text = re.sub(r"^(джарвис|!заметка|заметка)\s*", "", user_input, flags=re.I).strip()
         if not note_text: await send_smart_response(chat_id, bus_id, "Текст пуст.", is_direct=is_direct)
@@ -451,6 +455,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
             await asyncio.to_thread(_write_note)
             await send_smart_response(chat_id, bus_id, "Заметка сохранена.", is_direct=is_direct)
         return True
+
     if lower in ["аякоджи голос вкл", "!голос вкл", "голос вкл"]:
         voice_chat_modes[chat_id] = True; await save_settings()
         await send_smart_response(chat_id, bus_id, "Голосовой модуль активирован.", is_direct=is_direct, send_as_voice=True)
@@ -459,6 +464,21 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         voice_chat_modes.pop(chat_id, None); await save_settings()
         await send_smart_response(chat_id, bus_id, "Голосовой модуль деактивирован.", is_direct=is_direct)
         return True
+
+    if lower in ["!мут"] or lower.startswith("!мут "):
+        if is_owner:
+            muted_chats[chat_id] = float('inf')
+            await save_settings()
+            await send_smart_response(chat_id, bus_id, "Собеседник изолирован.", is_direct=is_direct)
+        return True
+
+    if lower in ["!размут", "размут"]:
+        if is_owner:
+            muted_chats.pop(chat_id, None)
+            await save_settings()
+            await send_smart_response(chat_id, bus_id, "Изоляция снята.", is_direct=is_direct)
+        return True
+
     rem_match = re.match(r"^(?:напомни|!напомни)\s+(?:через\s+)?(\d+)\s*(сек|мин|час|дн|ч|м|с)[а-я]*\s+(.+)$", user_input, re.I)
     if rem_match:
         qty, unit, task_text = int(rem_match.group(1)), rem_match.group(2).lower(), rem_match.group(3).strip()
@@ -469,6 +489,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         await save_reminders()
         await send_smart_response(chat_id, bus_id, f"Напомню <i>«{task_text}»</i> через {qty} {unit}.{context}", is_direct=is_direct)
         return True
+
     return False
 
 # --- ОБРАБОТЧИКИ ---
@@ -498,8 +519,7 @@ async def handle_business_message(message: types.Message):
     if not message.from_user or message.from_user.is_bot or message.from_user.id == bot_id: return
     if chat_id == bot_id or (OWNER_ID != 0 and chat_id == OWNER_ID): return
     msg_key = (chat_id, msg_id)
-    if msg_key in processed_message_ids: return
-    processed_message_ids[msg_key] = True
+    if msg_key in processed_message_ids: return    processed_message_ids[msg_key] = True
     
     is_owner = (OWNER_ID != 0 and message.from_user.id == OWNER_ID)
     if is_owner:
@@ -571,7 +591,7 @@ async def cleaner_and_reminders_task():
             today_date = now_dt.strftime("%Y-%m-%d")
             if focus_until > 0 and now > focus_until:
                 focus_until = 0.0
-                if OWNER_ID != 0: await send_smart_response(OWNER_ID, "", "Режим фокуса завершен. Я снова на связи.", is_direct=True)
+                if OWNER_ID != 0: await send_smart_response(OWNER_ID, "", "Режим фокуса завершен.", is_direct=True)
             if now_dt.hour == 9 and now_dt.minute == 0 and last_auto_briefing_date != today_date and OWNER_ID != 0:
                 last_auto_briefing_date = today_date
                 await send_smart_response(OWNER_ID, "", await build_daily_briefing(), is_direct=True, send_as_voice=True)
@@ -604,7 +624,7 @@ async def main():
     bg_task = asyncio.create_task(cleaner_and_reminders_task())
     try:
         await bot.delete_webhook(drop_pending_updates=True)
-        logger.info(f"Аякоджи онлайн. Ключей Groq: {len(GROQ_KEYS)}. Fish Audio: {'ВКЛ' if FISH_AUDIO_API_KEY else 'ВЫКЛ'}")
+        logger.info(f"Аякоджи онлайн. Ключей: {len(GROQ_KEYS)}. Fish Audio: {'ВКЛ' if FISH_AUDIO_API_KEY else 'ВЫКЛ'}")
         await dp.start_polling(bot)
     except TelegramConflictError: logger.critical("Запущен дубликат бота!")
     finally:
