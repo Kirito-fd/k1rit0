@@ -508,10 +508,6 @@ async def save_stats():
 
 # --- 🛡 АНТИ-СКАМ СКАНЕР ССЫЛОК И ДОМЕНОВ (AYAKOJI LINK SHIELD) ---
 async def inspect_url_security(raw_url: str) -> Dict[str, Any]:
-    """
-    Раскрывает цепочку редиректов, проверяет на IP-логгеры, фишинг,
-    получает данные о сервере/хостинге и возраст домена через RDAP.
-    """
     if not raw_url.startswith(("http://", "https://")):
         raw_url = "https://" + raw_url
 
@@ -535,7 +531,6 @@ async def inspect_url_security(raw_url: str) -> Dict[str, Any]:
 
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
-    # 1. Проходим по редиректам и смотрим финальный адрес
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(raw_url, headers=headers, allow_redirects=True, timeout=8) as resp:
@@ -560,7 +555,6 @@ async def inspect_url_security(raw_url: str) -> Dict[str, Any]:
                     if t_match:
                         result["page_title"] = re.sub(r"\s+", " ", t_match.group(1)).strip()[:100]
 
-                    # Проверка на фишинговые формы авторизации на подозрительных доменах
                     if re.search(r'type=["\']password["\']', html_chunk[:30000], re.IGNORECASE):
                         official_safe = {"google.com", "github.com", "vk.com", "yandex.ru", "telegram.org", "steampowered.com"}
                         if final_dom not in official_safe:
@@ -570,7 +564,6 @@ async def inspect_url_security(raw_url: str) -> Dict[str, Any]:
 
     target_dom = result["final_domain"] or initial_domain
 
-    # 2. Проверяем сервер и хостинг через IP-API
     try:
         ip_api_url = f"http://ip-api.com/json/{target_dom}?fields=status,country,isp,org,hosting,proxy,query"
         async with aiohttp.ClientSession() as session:
@@ -585,7 +578,6 @@ async def inspect_url_security(raw_url: str) -> Dict[str, Any]:
     except Exception:
         pass
 
-    # 3. Проверяем дату создания домена через RDAP
     try:
         parts = target_dom.split(".")
         base_dom = ".".join(parts[-2:]) if len(parts) >= 2 else target_dom
@@ -603,7 +595,6 @@ async def inspect_url_security(raw_url: str) -> Dict[str, Any]:
     except Exception:
         pass
 
-    # 4. Анализ угроз
     if result["is_ip_logger"]:
         result["warnings"].insert(0, "🚨 ОБНАРУЖЕН IP-ЛОГГЕР / ГРАББЕР! Ссылка предназначена для скрытого перехвата твоего IP-адреса и данных устройства.")
         result["risk_level"] = "🔴 КРИТИЧЕСКИЙ (IP-Логгер / Ловушка)"
@@ -621,7 +612,6 @@ async def inspect_url_security(raw_url: str) -> Dict[str, Any]:
 
 
 def format_security_report(info: Dict[str, Any]) -> str:
-    """Форматирует отчет проверки ссылки в стиле Аянокоджи."""
     redirects_str = " ➔ ".join(info["redirects"] + [info["final_domain"]]) if info["redirects"] else "Прямая ссылка (без редиректов)"
     warns = "\n".join(f"• <i>{w}</i>" for w in info["warnings"]) if info["warnings"] else "• Явных угроз в структуре не обнаружено."
 
@@ -736,12 +726,12 @@ def extract_composition_tags(prompt: str) -> str:
     return ", ".join(tags)
 
 
-# --- ПРОМПТЫ ЛИЧНОСТИ АЯНОКОДЖИ (AYAKOJI) ---
+# --- ПРОМПТЫ ЛИЧНОСТИ АЯНОКОДЖИ (БЕЗ ЗВЕЗДОЧЕК MARKDOWN) ---
 STRICT_NO_COT_AND_LANG = (
     "\nГЛАВНЫЕ ПРАВИЛА:\n"
     "1. ЯЗЫК: Отвечай ИСКЛЮЧИТЕЛЬНО на русском языке.\n"
-    "2. СТРОГО БЕЗ ЭМОДЗИ И СМАЙЛИКОВ.\n"
-    "3. Пиши СРАЗУ готовый ответ, без вступительных слов и без тегов <think>."
+    "2. СТРОГО БЕЗ ЭМОДЗИ, БЕЗ СИМВОЛОВ ЗВЕЗДОЧЕК (*) И БЕЗ РАЗМЕТКИ MARKDOWN.\n"
+    "3. Пиши СРАЗУ готовый ответ чистым текстом, без вступительных слов и без тегов <think>."
 )
 
 AYAKOJI_PROMPT_DIRECT_BASE = (
@@ -749,7 +739,7 @@ AYAKOJI_PROMPT_DIRECT_BASE = (
     "Твой создатель и единственный союзник — Кирито.\n"
     "1. СТИЛЬ: Спокойный, хладнокровный, рассудительный, предельно точный. Ты не тратишь слова впустую, но к Кирито относишься с уважением.\n"
     "2. ЭРУДИЦИЯ: Ты знаешь абсолютно всё — аниме, мангу, игры, психологию, науку, историю, мемы и код. "
-    "Отвечай умно, четко и по существу. Если переданы факты из сети или содержимое документа — используй их."
+    "Отвечай умно, четко, лаконично и по существу, без использования звездочек (*)."
 ) + STRICT_NO_COT_AND_LANG
 
 AYAKOJI_PROMPT_VIP = (
@@ -968,44 +958,111 @@ async def extract_message_content(message: types.Message) -> Tuple[str, bool]:
     return "Собеседник передал сообщение.", False
 
 
-# --- СИНТЕЗАТОР ГОЛОСА ---
+# --- СИНТЕЗАТОР ГОЛОСА (С ОЧИСТКОЙ ЗВЕЗДОЧЕК И ПОДДЕРЖКОЙ ДЛИННЫХ ГС) ---
+def clean_text_for_tts(text: str) -> str:
+    """Убирает звездочки Markdown, HTML-теги и исправляет сокращения для чистой речи."""
+    cleaned = re.sub(r"<[^>]+>", " ", text)
+    cleaned = re.sub(r"[\*\#\_\~\`\>\|]+", " ", cleaned)
+    cleaned = re.sub(r"https?://[^\s]+", " ссылка ", cleaned)
+    replacements = {
+        r"\bи др\.": "и другое",
+        r"\bи т\.д\.": "и так далее",
+        r"\bи т\.п\.": "и тому подобное",
+        r"\bт\.е\.": "то есть",
+        r"\bПО\b": "программного обеспечения",
+        r"\bC\+\+": "Си плюс плюс",
+        r"\bPython\b": "Пайтон",
+        r"\bJavaScript\b": "ДжаваСкрипт",
+    }
+    for pattern, repl in replacements.items():
+        cleaned = re.sub(pattern, repl, cleaned, flags=re.IGNORECASE)
+
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def split_text_into_chunks(text: str, max_len: int = 380) -> List[str]:
+    """Делит длинный текст на части по предложениям, чтобы Fish Audio не обрывался по таймауту."""
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    chunks: List[str] = []
+    current = ""
+    for sent in sentences:
+        if len(current) + len(sent) + 1 <= max_len:
+            current = f"{current} {sent}".strip()
+        else:
+            if current:
+                chunks.append(current)
+            if len(sent) > max_len:
+                for i in range(0, len(sent), max_len):
+                    chunks.append(sent[i:i + max_len])
+                current = ""
+            else:
+                current = sent
+    if current:
+        chunks.append(current)
+    return chunks or [text]
+
+
 async def generate_with_fish_audio(text: str, output_path: Path) -> bool:
+    """Озвучивает текст любого размера через Fish Audio (разбивая длинный текст на части)."""
     if not FISH_AUDIO_API_KEY:
         return False
+
     url = "https://api.fish.audio/v1/tts"
     headers = {
         "Authorization": f"Bearer {FISH_AUDIO_API_KEY}",
         "Content-Type": "application/json",
         "model": "s2.1-pro-free"
     }
-    payload: Dict[str, Any] = {"text": text, "format": "mp3"}
-    if FISH_AUDIO_VOICE_ID:
-        payload["reference_id"] = FISH_AUDIO_VOICE_ID
+
+    chunks = split_text_into_chunks(text, max_len=380)
+    combined_bytes = bytearray()
 
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, headers=headers, timeout=25) as resp:
-                if resp.status == 200:
-                    with open(output_path, "wb") as f:
-                        f.write(await resp.read())
-                    return True
-                return False
-    except Exception:
+            for chunk in chunks:
+                if not chunk.strip():
+                    continue
+                payload: Dict[str, Any] = {"text": chunk.strip(), "format": "mp3"}
+                if FISH_AUDIO_VOICE_ID:
+                    payload["reference_id"] = FISH_AUDIO_VOICE_ID
+
+                async with session.post(url, json=payload, headers=headers, timeout=65) as resp:
+                    if resp.status == 200:
+                        part_data = await resp.read()
+                        if part_data:
+                            combined_bytes.extend(part_data)
+                    else:
+                        err_msg = await resp.text()
+                        logger.warning(f"Fish Audio статус {resp.status}: {err_msg[:150]}")
+                        return False
+
+        if combined_bytes:
+            with open(output_path, "wb") as f:
+                f.write(combined_bytes)
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"Сбой Fish Audio: {e}")
         return False
 
 
 async def process_voice_output(text: str) -> Optional[Path]:
+    tts_clean_text = clean_text_for_tts(text)
+    if not tts_clean_text:
+        tts_clean_text = "Готово."
+
     unique_id = uuid.uuid4().hex
     raw_audio = Path(tempfile.gettempdir()) / f"raw_{unique_id}.mp3"
     final_ogg = Path(tempfile.gettempdir()) / f"ayakoji_{unique_id}.ogg"
 
     success = False
     if FISH_AUDIO_API_KEY:
-        success = await generate_with_fish_audio(text, raw_audio)
+        success = await generate_with_fish_audio(tts_clean_text, raw_audio)
 
     if not success:
         try:
-            communicate = edge_tts.Communicate(text, OFFICIAL_VOICE, pitch=OFFICIAL_PITCH, rate=OFFICIAL_RATE)
+            communicate = edge_tts.Communicate(tts_clean_text, OFFICIAL_VOICE, pitch=OFFICIAL_PITCH, rate=OFFICIAL_RATE)
             await communicate.save(str(raw_audio))
             success = raw_audio.exists() and raw_audio.stat().st_size > 0
         except Exception:
@@ -1059,6 +1116,14 @@ async def send_smart_response(
         await asyncio.sleep(delay_sec)
 
     if send_as_voice:
+        try:
+            await bot.send_chat_action(
+                chat_id=chat_id,
+                action=ChatAction.RECORD_VOICE,
+                business_connection_id=bus_id if not is_direct else None
+            )
+        except Exception:
+            pass
         voice_path = await process_voice_output(reply_text)
         if voice_path and voice_path.exists():
             try:
@@ -1190,7 +1255,7 @@ async def generate_psychological_dossier(target_chat_id: int) -> str:
         "2. Скрытые мотивы (чего он на самом деле хочет).\n"
         "3. Уязвимости и слабые места.\n"
         "4. Рекомендация по манипуляции/общению с ним.\n"
-        "Пиши строго на русском языке, кратко, аналитично, без эмодзи."
+        "Пиши строго на русском языке, кратко, аналитично, без звездочек (*) и без эмодзи."
     )
     user_q = f"Объект: {name} ({username}).\nЕго реплики:\n{joined_msgs}"
 
@@ -1584,7 +1649,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
             s_prompt = (
                 f"Пользователь запросил поиск: '{query}'.\n"
                 f"Вот свежие факты из поисковой выдачи сети:\n{search_data}\n\n"
-                f"Сформулируй четкий, хладнокровный и точный ответ от лица Аянокоджи."
+                f"Сформулируй четкий, хладнокровный и точный ответ от лица Аянокоджи без звездочек (*)."
             )
             answer = await ask_ai(s_prompt, chat_id, get_direct_prompt(), max_tokens=450)
             await send_smart_response(chat_id, bus_id, answer, is_direct=is_direct)
@@ -1792,7 +1857,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
             g_status = "Обычный гость"
 
         v_status = "Постоянно" if voice_chat_modes.get(chat_id, False) else "Адаптивный"
-        tts_source = "Fish Audio" if FISH_AUDIO_API_KEY else "Edge-TTS"
+        tts_source = "Fish Audio (Чанковый)" if FISH_AUDIO_API_KEY else "Edge-TTS"
 
         idle_diff = time.time() - last_owner_activity
         if always_answer_mode:
@@ -1809,7 +1874,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
             f"• Статус создателя: <b>{owner_status}</b>\n"
             f"• Главный мозг: <b>{primary_m}</b>\n"
             f"• Резервных ключей Groq: {len(GROQ_KEYS)}\n"
-            f"• Модули: Link Shield (Анти-Скам), Медиа-Перехват, VIP, Призрак\n"
+            f"• Модули: Link Shield, Медиа-Перехват, VIP, Призрак, Чанк-Голос\n"
             f"• Голос: {tts_source} ({v_status})\n"
             f"• Статус текущего чата: <b>{g_status}</b>"
         )
@@ -1948,7 +2013,7 @@ async def handle_direct_message(message: types.Message):
             actual_prompt = (
                 f"Сообщение пользователя: '{user_input}'.\n"
                 f"Содержимое веб-страницы по ссылке ({sec_info['final_url']}):\n{page_content}\n\n"
-                f"Сделай четкую, умную выжимку сути или ответь на вопрос по этой ссылке."
+                f"Сделай четкую, умную выжимку сути или ответь на вопрос по этой ссылке без звездочек (*)."
             )
     elif should_auto_search(user_input):
         search_query = clean_search_query(user_input)
@@ -1957,13 +2022,13 @@ async def handle_direct_message(message: types.Message):
             actual_prompt = (
                 f"Вопрос: '{user_input}'.\n"
                 f"Актуальные данные из сети:\n{web_facts}\n"
-                f"Используй эти данные для точного ответа."
+                f"Используй эти данные для точного ответа без звездочек (*)."
             )
 
     voice_triggers = ["в голосовом", "голосовым", "голосом", "скажи в гс", "озвучь", "проговори"]
     forced_voice_request = any(t in user_input.lower() for t in voice_triggers)
 
-    reply = await ask_ai(actual_prompt, chat_id, get_direct_prompt(), max_tokens=500)
+    reply = await ask_ai(actual_prompt, chat_id, get_direct_prompt(), max_tokens=450)
 
     random_voice_chance = random.random() < 0.25
     should_voice = is_voice or forced_voice_request or voice_chat_modes.get(chat_id, False) or random_voice_chance
@@ -2099,7 +2164,7 @@ async def handle_business_message(message: types.Message):
             actual_prompt = (
                 f"Вопрос собеседника: '{user_input}'.\n"
                 f"Факты из сети:\n{web_facts}\n"
-                f"Ответь на основе этих фактов в соответствии со своей ролью."
+                f"Ответь на основе этих фактов в соответствии со своей ролью без звездочек (*)."
             )
 
     reply = await ask_ai(actual_prompt, chat_id, target_system_prompt, max_tokens=240)
