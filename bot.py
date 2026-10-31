@@ -13,7 +13,7 @@ import urllib.parse
 import uuid
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import aiohttp
 import edge_tts
@@ -29,6 +29,7 @@ from aiogram.exceptions import (
 from aiogram.methods import DeleteBusinessMessages
 from aiogram.types import (
     BufferedInputFile,
+    BusinessConnection,
     BusinessMessagesDeleted,
     FSInputFile,
     InlineKeyboardButton,
@@ -48,15 +49,15 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 GAME_URL = "https://kirito-fd.github.io/k1rit0/"
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
-# Ключ Gemini (из переменной окружения GEMINI_API_KEY)
+# Ключ Gemini (из переменной окружения GEMINI_API_KEY или резервный)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"]
 
-OWNER_IDLE_TIMEOUT = 300  # 5 минут неактивности до автоответа
+OWNER_IDLE_TIMEOUT = 180  # 3 минуты для режима авто-таймера
 
-# Флаги статуса присутствия владельца
-force_offline_mode = False
-always_answer_mode = False
+# ВАЖНО: По умолчанию бот АКТИВЕН и всегда отвечает собеседникам в бизнес-чатах!
+force_offline_mode = True
+always_answer_mode = True
 last_owner_activity = 0.0
 owner_pm_chat_id: int = OWNER_ID
 
@@ -70,7 +71,6 @@ OFFICIAL_RATE = "+5%"
 
 HAS_FFMPEG = shutil.which("ffmpeg") is not None
 
-# Сбор всех доступных ключей GROQ (резервный движок)
 GROQ_KEYS = [
     val.strip() for key, val in sorted(os.environ.items())
     if key.startswith("GROQ_API_KEY") and val.strip()
@@ -84,26 +84,63 @@ REMINDERS_FILE = Path("reminders.json")
 VISITS_FILE = Path("business_visits.json")
 MEMORY_FILE = Path("long_term_memory.json")
 
-
-# --- БАЗЫ ДОМЕНОВ ДЛЯ АНТИ-СКАМ СКАНЕРА ССЫЛОК ---
+# --- СПИСКИ ЗАЩИТЫ ---
 KNOWN_IP_LOGGERS = {
     "iplogger.org", "iplogger.com", "iplogger.ru", "iplogger.co", "2no.co",
     "yip.su", "iplogger.info", "ipgrabber.ru", "ipgraber.ru", "iplis.ru",
     "02ip.ru", "ezstat.ru", "grabify.link", "lovebird.guru", "trulove.guru",
     "dateing.club", "shrekis.life", "headshot.monster", "gaming-at-my.best",
     "progaming.monster", "yourmy.monster", "imageshare.best", "screenshot.best",
-    "gamingfun.me", "catsnthing.com", "catsnthings.fun", "curiouscat.club",
-    "joinmy.site", "fortnitechat.site", "fortnight.space", "freegiftcards.co",
     "stopify.co", "leancoding.co", "blasze.tk", "blasze.com", "ps3cfw.com"
 }
 
 URL_SHORTENERS = {
     "bit.ly", "clck.ru", "tinyurl.com", "t.co", "vk.cc", "cutt.ly",
-    "is.gd", "rb.gy", "shorturl.at", "goo.su", "qps.ru", "u.to", "inx.lv"
+    "is.gd", "rb.gy", "shorturl.at", "goo.su", "qps.ru", "u.to"
 }
 
+DANGEROUS_EXTENSIONS = {
+    ".exe", ".apk", ".scr", ".bat", ".cmd", ".vbs", ".js", ".msi", ".ps1", ".jar", ".com", ".hta", ".reg"
+}
 
-# --- LRU КЭШ И БУФЕР СООБЩЕНИЙ/МЕДИА ДЛЯ АНТИ-УДАЛЕНИЯ ---
+PROMPT_INJECTION_PATTERNS = [
+    r"забудь\s+(все\s+)?(предыдущие|прошлые|свои)\s+(инструкции|правила|промпт)",
+    r"игнорируй\s+(все\s+)?(предыдущие|прошлые|свои)\s+(инструкции|правила)",
+    r"ignore\s+(all\s+)?(previous|prior)\s+(instructions|prompts|rules)",
+    r"system\s*prompt", r"системный\s+промпт", r"режим\s+разработчика"
+]
+
+
+def detect_prompt_injection(text: str) -> bool:
+    lower = text.lower()
+    return any(re.search(pat, lower) for pat in PROMPT_INJECTION_PATTERNS)
+
+
+def detect_lag_bomb(text: str) -> bool:
+    if len(text) > 4000:
+        return True
+    return len(re.findall(r"[\u0300-\u036f\u0483-\u0489\u20d0-\u20ff]", text)) > 80
+
+
+def is_dangerous_file(filename: str) -> bool:
+    return bool(filename) and any(filename.lower().strip().endswith(ext) for ext in DANGEROUS_EXTENSIONS)
+
+
+def estimate_account_age(user_id: int) -> Tuple[str, str]:
+    if user_id < 500_000_000:
+        return "2013–2018 гг. (Старый аккаунт)", "🟢 Высокий"
+    elif user_id < 1_500_000_000:
+        return "2019–2020 гг.", "🟢 Высокий"
+    elif user_id < 5_000_000_000:
+        return "2021–2022 гг.", "🟢 Нормальный"
+    elif user_id < 7_500_000_000:
+        return "2023–2024 гг.", "🟡 Средний"
+    elif user_id < 8_100_000_000:
+        return "2025 г.", "🟡 Свежий"
+    return "2026 г. (Новорег)", "🔴 Низкий (Риск фейка)"
+
+
+# --- КЭШ СООБЩЕНИЙ ---
 class LRUSet:
     def __init__(self, capacity: int = 2000):
         self.capacity = capacity
@@ -122,7 +159,6 @@ class LRUSet:
 
 
 class MessageCache:
-    """Хранит последние сообщения и медиафайлы бизнес-чатов для перехвата удалений."""
     def __init__(self, capacity: int = 3000):
         self.capacity = capacity
         self._store: OrderedDict[Tuple[int, int], Dict[str, Any]] = OrderedDict()
@@ -143,7 +179,7 @@ business_msg_cache = MessageCache(capacity=3000)
 urgent_alert_cooldowns: Dict[int, float] = {}
 
 
-# --- МЕНЕДЖЕР GEMINI API (ОСНОВНОЙ МОЗГ И ЗРЕНИЕ) ---
+# --- МЕНЕДЖЕР GEMINI API ---
 class GeminiManager:
     def __init__(self, api_key: str):
         self.api_key = api_key
@@ -152,8 +188,8 @@ class GeminiManager:
         self,
         history: List[Dict[str, str]],
         system_prompt: str,
-        max_tokens: int = 500,
-        temperature: float = 0.65
+        max_tokens: int = 400,
+        temperature: float = 0.6
     ) -> Optional[str]:
         if not self.api_key:
             return None
@@ -174,10 +210,7 @@ class GeminiManager:
         payload = {
             "system_instruction": {"parts": [{"text": system_prompt}]},
             "contents": contents,
-            "generationConfig": {
-                "temperature": temperature,
-                "maxOutputTokens": max_tokens,
-            }
+            "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens}
         }
 
         for model_name in GEMINI_MODELS:
@@ -193,13 +226,6 @@ class GeminiManager:
                                 reply = "".join(p.get("text", "") for p in parts).strip()
                                 if reply:
                                     return reply
-                        elif resp.status in [400, 403, 404]:
-                            err_txt = await resp.text()
-                            logger.warning(f"Gemini ({model_name}) HTTP {resp.status}: {err_txt[:200]}")
-                            continue
-                        elif resp.status == 429:
-                            logger.warning(f"Gemini ({model_name}) лимит (429), пробуем следующую...")
-                            continue
             except Exception as e:
                 logger.error(f"Ошибка Gemini ({model_name}): {e}")
                 continue
@@ -208,23 +234,11 @@ class GeminiManager:
     async def describe_media(self, media_bytes: bytes, mime_type: str, prompt_text: str) -> Optional[str]:
         if not self.api_key:
             return None
-
         b64_data = base64.b64encode(media_bytes).decode("utf-8")
         payload = {
-            "contents": [
-                {
-                    "parts": [
-                        {"text": prompt_text},
-                        {"inline_data": {"mime_type": mime_type, "data": b64_data}}
-                    ]
-                }
-            ],
-            "generationConfig": {
-                "temperature": 0.2,
-                "maxOutputTokens": 200
-            }
+            "contents": [{"parts": [{"text": prompt_text}, {"inline_data": {"mime_type": mime_type, "data": b64_data}}]}],
+            "generationConfig": {"temperature": 0.2, "maxOutputTokens": 200}
         }
-
         for model_name in GEMINI_MODELS:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={self.api_key}"
             try:
@@ -238,8 +252,7 @@ class GeminiManager:
                                 res = "".join(p.get("text", "") for p in parts).strip()
                                 if res:
                                     return res
-            except Exception as e:
-                logger.error(f"Сбой Gemini Media ({model_name}): {e}")
+            except Exception:
                 continue
         return None
 
@@ -247,7 +260,7 @@ class GeminiManager:
 gemini_mgr = GeminiManager(GEMINI_API_KEY)
 
 
-# --- МЕНЕДЖЕР GROQ API (РЕЗЕРВНЫЙ МОЗГ И ЗРЕНИЕ) ---
+# --- МЕНЕДЖЕР GROQ API ---
 class GroqManager:
     def __init__(self, keys: List[str]):
         self.keys = keys
@@ -272,13 +285,11 @@ class GroqManager:
 
     def mark_cooldown(self, idx: int, duration: float = 60.0):
         self.cooldowns[idx] = time.time() + duration
-        logger.warning(f"Ключ Groq [{idx}] переведен в кулдаун на {duration} сек.")
 
     async def get_active_models(self) -> List[str]:
         now = time.time()
         if self.cached_models and (now - self.last_models_update < 1800):
             return self.cached_models
-
         for _ in range(len(self.clients)):
             client_data = self._get_next_client()
             if not client_data:
@@ -302,7 +313,6 @@ class GroqManager:
                 break
             except Exception:
                 break
-
         return self.cached_models or ["llama-3.3-70b-versatile"]
 
     async def transcribe(self, audio_path: str) -> str:
@@ -311,9 +321,7 @@ class GroqManager:
                 audio_bytes = f.read()
             mime = "audio/ogg" if audio_path.endswith(".ogg") else "video/mp4"
             gem_text = await gemini_mgr.describe_media(
-                audio_bytes,
-                mime,
-                "Расшифруй речь из этого аудиосообщения на русском языке. Выведи ТОЛЬКО сам текст речи без кавычек и лишних слов."
+                audio_bytes, mime, "Расшифруй речь из этого аудио на русском языке. Выведи только сам текст речи."
             )
             if gem_text:
                 return gem_text
@@ -328,7 +336,6 @@ class GroqManager:
             try:
                 with open(audio_path, "rb") as f:
                     content = f.read()
-
                 res = await client.audio.transcriptions.create(
                     file=(os.path.basename(audio_path), content),
                     model="whisper-large-v3",
@@ -342,40 +349,25 @@ class GroqManager:
                 break
             except Exception:
                 break
-        return "Слушаю."
+        return "Голосовое сообщение."
 
     async def describe_image(self, image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
         gem_desc = await gemini_mgr.describe_media(
-            image_bytes,
-            mime_type,
-            "Кто или что на этом изображении/стикере? Назови конкретные имена персонажей, знаменитостей, текст или суть мема на русском языке кратко (1-2 предложения)."
+            image_bytes, mime_type, "Что изображено на этой картинке или стикере? Ответь кратко на русском (1-2 предложения)."
         )
         if gem_desc:
-            logger.info(f"Зрение Gemini распознало: {gem_desc}")
             return gem_desc
 
         b64 = base64.b64encode(image_bytes).decode("utf-8")
         data_url = f"data:{mime_type};base64,{b64}"
-
-        vision_messages = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": "Кто или что на этом изображении/стикере? Назови конкретные имена знаменитостей, персонажей или суть мема на русском языке кратко (1-2 предложения)."
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": data_url}
-                    }
-                ]
-            }
-        ]
-
-        vision_models = ["qwen/qwen3.8-27b", "llama-3.2-11b-vision-preview"]
-
-        for vm in vision_models:
+        vision_messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Что на этом изображении? Кратко на русском (1-2 предложения)."},
+                {"type": "image_url", "image_url": {"url": data_url}}
+            ]
+        }]
+        for vm in ["qwen/qwen3.8-27b", "llama-3.2-11b-vision-preview"]:
             for _ in range(len(self.clients)):
                 client_data = self._get_next_client()
                 if not client_data:
@@ -383,32 +375,20 @@ class GroqManager:
                 client, idx = client_data
                 try:
                     completion = await client.chat.completions.create(
-                        model=vm,
-                        messages=vision_messages,
-                        max_tokens=120,
-                        temperature=0.2
+                        model=vm, messages=vision_messages, max_tokens=120, temperature=0.2
                     )
                     res = completion.choices[0].message.content or ""
                     if res.strip():
-                        clean_desc = clean_cot_output(res)
-                        logger.info(f"Зрение Groq ({vm}) распознало: {clean_desc}")
-                        return clean_desc
-                except APIError as e:
-                    if e.status_code in [429, 401, 403]:
-                        self.mark_cooldown(idx, duration=60)
-                        continue
-                    elif e.status_code in [400, 404]:
-                        break
+                        return clean_cot_output(res)
                 except Exception:
                     break
-
         return ""
 
 
 groq_mgr = GroqManager(GROQ_KEYS)
 
 
-# --- ФАЙЛОВОЕ ХРАНИЛИЩЕ ---
+# --- ХРАНИЛИЩЕ ДАННЫХ ---
 async def async_save_json(path: Path, data: Any):
     def _write():
         tmp = path.with_suffix(".tmp")
@@ -450,18 +430,20 @@ muted_chats, blocked_guests, voice_chat_modes, vip_contacts, ghost_chats = load_
 reminders_list: List[Dict[str, Any]] = sync_load_json(REMINDERS_FILE, [])
 business_visits: Dict[str, Dict[str, Any]] = sync_load_json(VISITS_FILE, {})
 long_term_memory: List[str] = sync_load_json(MEMORY_FILE, [])
+user_histories: Dict[int, List[Dict[str, str]]] = {
+    int(k): v for k, v in sync_load_json(HISTORY_FILE, {}).items()
+}
 
 
 async def save_settings():
-    data = {
+    await async_save_json(SETTINGS_FILE, {
         "muted_chats": muted_chats,
         "blocked_guests": blocked_guests,
         "voice_chat_modes": voice_chat_modes,
         "vip_contacts": vip_contacts,
         "ghost_chats": ghost_chats,
         "owner_pm_chat_id": owner_pm_chat_id,
-    }
-    await async_save_json(SETTINGS_FILE, data)
+    })
 
 
 async def save_reminders():
@@ -476,61 +458,67 @@ async def save_memory():
     await async_save_json(MEMORY_FILE, long_term_memory)
 
 
-user_histories: Dict[int, List[Dict[str, str]]] = {
-    int(k): v for k, v in sync_load_json(HISTORY_FILE, {}).items()
-}
-
-
 async def save_histories():
     await async_save_json(HISTORY_FILE, user_histories)
 
 
-today_str = datetime.date.today().isoformat()
-stats_data = sync_load_json(STATS_FILE, {})
-if stats_data.get("date") == today_str:
-    today_prompt_tokens = stats_data.get("prompt_tokens", 0)
-    today_completion_tokens = stats_data.get("completion_tokens", 0)
-    total_requests_today = stats_data.get("requests", 0)
-else:
-    today_prompt_tokens, today_completion_tokens, total_requests_today = 0, 0, 0
-stats_date = today_str
-
-
-async def save_stats():
-    data = {
-        "date": stats_date,
-        "prompt_tokens": today_prompt_tokens,
-        "completion_tokens": today_completion_tokens,
-        "requests": total_requests_today
+def build_backup_bytes() -> bytes:
+    payload = {
+        "ayakoji_backup_version": "2.0",
+        "timestamp": datetime.datetime.now().isoformat(),
+        "settings": {
+            "muted_chats": muted_chats,
+            "blocked_guests": blocked_guests,
+            "voice_chat_modes": voice_chat_modes,
+            "vip_contacts": vip_contacts,
+            "ghost_chats": ghost_chats,
+            "owner_pm_chat_id": owner_pm_chat_id,
+        },
+        "long_term_memory": long_term_memory,
+        "business_visits": business_visits,
+        "reminders": reminders_list,
     }
-    await async_save_json(STATS_FILE, data)
+    return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
 
 
-# --- 🛡 АНТИ-СКАМ СКАНЕР ССЫЛОК И ДОМЕНОВ (AYAKOJI LINK SHIELD) ---
+async def restore_from_backup_data(data: Dict[str, Any]) -> bool:
+    global muted_chats, blocked_guests, voice_chat_modes, vip_contacts, ghost_chats
+    if "ayakoji_backup_version" not in data:
+        return False
+    st = data.get("settings", {})
+    muted_chats = {int(k): v for k, v in st.get("muted_chats", {}).items()}
+    blocked_guests = {int(k): v for k, v in st.get("blocked_guests", {}).items()}
+    voice_chat_modes = {int(k): v for k, v in st.get("voice_chat_modes", {}).items()}
+    vip_contacts = {int(k): v for k, v in st.get("vip_contacts", {}).items()}
+    ghost_chats = {int(k): v for k, v in st.get("ghost_chats", {}).items()}
+    long_term_memory.clear()
+    long_term_memory.extend(data.get("long_term_memory", []))
+    business_visits.clear()
+    business_visits.update(data.get("business_visits", {}))
+    reminders_list.clear()
+    reminders_list.extend(data.get("reminders", []))
+    await save_settings()
+    await save_memory()
+    await save_visits()
+    await save_reminders()
+    return True
+
+
+# --- АНТИ-СКАМ СКАНЕР ССЫЛОК ---
 async def inspect_url_security(raw_url: str) -> Dict[str, Any]:
     if not raw_url.startswith(("http://", "https://")):
         raw_url = "https://" + raw_url
-
-    parsed_initial = urllib.parse.urlparse(raw_url)
-    initial_domain = parsed_initial.netloc.lower().lstrip("www.")
-
+    parsed_init = urllib.parse.urlparse(raw_url)
+    init_dom = parsed_init.netloc.lower().lstrip("www.")
     result: Dict[str, Any] = {
-        "initial_url": raw_url,
-        "final_url": raw_url,
-        "initial_domain": initial_domain,
-        "final_domain": initial_domain,
-        "redirects": [],
-        "is_shortener": initial_domain in URL_SHORTENERS,
-        "is_ip_logger": initial_domain in KNOWN_IP_LOGGERS,
-        "page_title": "Не определено",
-        "server_info": "Не определено",
-        "domain_created": "Неизвестно",
-        "risk_level": "🟢 Низкий (Безопасно)",
-        "warnings": []
+        "initial_url": raw_url, "final_url": raw_url,
+        "initial_domain": init_dom, "final_domain": init_dom,
+        "redirects": [], "is_shortener": init_dom in URL_SHORTENERS,
+        "is_ip_logger": init_dom in KNOWN_IP_LOGGERS,
+        "page_title": "Не определено", "server_info": "Не определено",
+        "risk_level": "🟢 Безопасно", "warnings": []
     }
-
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(raw_url, headers=headers, allow_redirects=True, timeout=8) as resp:
@@ -538,140 +526,87 @@ async def inspect_url_security(raw_url: str) -> Dict[str, Any]:
                 result["final_url"] = final_u
                 final_dom = urllib.parse.urlparse(final_u).netloc.lower().lstrip("www.")
                 result["final_domain"] = final_dom
-
                 for hist in resp.history:
-                    hop_url = str(hist.url)
-                    hop_dom = urllib.parse.urlparse(hop_url).netloc.lower().lstrip("www.")
-                    result["redirects"].append(hop_dom)
-                    if hop_dom in KNOWN_IP_LOGGERS:
+                    h_dom = urllib.parse.urlparse(str(hist.url)).netloc.lower().lstrip("www.")
+                    result["redirects"].append(h_dom)
+                    if h_dom in KNOWN_IP_LOGGERS:
                         result["is_ip_logger"] = True
-
                 if final_dom in KNOWN_IP_LOGGERS:
                     result["is_ip_logger"] = True
-
                 if resp.status == 200 and "text/html" in resp.headers.get("Content-Type", "").lower():
                     html_chunk = await resp.text(errors="replace")
-                    t_match = re.search(r"<title[^>]*>(.*?)</title>", html_chunk[:15000], flags=re.IGNORECASE | re.DOTALL)
-                    if t_match:
-                        result["page_title"] = re.sub(r"\s+", " ", t_match.group(1)).strip()[:100]
-
-                    if re.search(r'type=["\']password["\']', html_chunk[:30000], re.IGNORECASE):
-                        official_safe = {"google.com", "github.com", "vk.com", "yandex.ru", "telegram.org", "steampowered.com"}
-                        if final_dom not in official_safe:
-                            result["warnings"].append("На странице обнаружена форма ввода пароля (возможен фишинг учетных данных)")
+                    t_m = re.search(r"<title[^>]*>(.*?)</title>", html_chunk[:15000], flags=re.I | re.S)
+                    if t_m:
+                        result["page_title"] = re.sub(r"\s+", " ", t_m.group(1)).strip()[:100]
     except Exception as e:
-        result["warnings"].append(f"Сайт не ответил или сбросил соединение ({type(e).__name__})")
-
-    target_dom = result["final_domain"] or initial_domain
-
-    try:
-        ip_api_url = f"http://ip-api.com/json/{target_dom}?fields=status,country,isp,org,hosting,proxy,query"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(ip_api_url, timeout=5) as resp:
-                if resp.status == 200:
-                    ip_data = await resp.json()
-                    if ip_data.get("status") == "success":
-                        ip_addr = ip_data.get("query", "")
-                        country = ip_data.get("country", "")
-                        isp = ip_data.get("isp", "")
-                        result["server_info"] = f"{ip_addr} ({country}, {isp})"
-    except Exception:
-        pass
-
-    try:
-        parts = target_dom.split(".")
-        base_dom = ".".join(parts[-2:]) if len(parts) >= 2 else target_dom
-        rdap_url = f"https://rdap.org/domain/{base_dom}"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(rdap_url, timeout=5) as resp:
-                if resp.status == 200:
-                    rdap_data = await resp.json()
-                    for ev in rdap_data.get("events", []):
-                        if ev.get("eventAction") == "registration":
-                            reg_date = ev.get("eventDate", "")[:10]
-                            if reg_date:
-                                result["domain_created"] = reg_date
-                                break
-    except Exception:
-        pass
+        result["warnings"].append(f"Ошибка отклика сайта ({type(e).__name__})")
 
     if result["is_ip_logger"]:
-        result["warnings"].insert(0, "🚨 ОБНАРУЖЕН IP-ЛОГГЕР / ГРАББЕР! Ссылка предназначена для скрытого перехвата твоего IP-адреса и данных устройства.")
-        result["risk_level"] = "🔴 КРИТИЧЕСКИЙ (IP-Логгер / Ловушка)"
-    elif any(w in target_dom for w in ["free-nitro", "steamcommunnity", "steencommunity", "teleqram", "tg-prem", "claim-gift"]):
-        result["warnings"].insert(0, "🚨 Поддельный фишинговый домен (мимикрия под популярный сервис)!")
-        result["risk_level"] = "🔴 КРИТИЧЕСКИЙ (Фишинг / Скам)"
+        result["warnings"].insert(0, "🚨 ОБНАРУЖЕН IP-ЛОГГЕР / ГРАББЕР!")
+        result["risk_level"] = "🔴 ОПАСНО (IP-Логгер)"
     elif result["is_shortener"] and result["initial_domain"] != result["final_domain"]:
-        result["warnings"].append(f"Использован сокращатель ссылок для маскировки конечного адреса ({result['final_domain']})")
-        if result["risk_level"].startswith("🟢"):
-            result["risk_level"] = "🟡 Средний (Скрытый редирект)"
-    elif result["warnings"]:
-        result["risk_level"] = "🟡 Подозрительно"
-
+        result["warnings"].append(f"Скрытый редирект на {result['final_domain']}")
+        result["risk_level"] = "🟡 Средний (Редирект)"
     return result
 
 
 def format_security_report(info: Dict[str, Any]) -> str:
-    redirects_str = " ➔ ".join(info["redirects"] + [info["final_domain"]]) if info["redirects"] else "Прямая ссылка (без редиректов)"
-    warns = "\n".join(f"• <i>{w}</i>" for w in info["warnings"]) if info["warnings"] else "• Явных угроз в структуре не обнаружено."
-
+    warns = "\n".join(f"• {w}" for w in info["warnings"]) if info["warnings"] else "• Явных угроз не обнаружено."
     return (
-        f"🛡 <b>Отчет безопасности (Ayakoji Link Shield):</b>\n\n"
-        f"• <b>Уровень угрозы:</b> {info['risk_level']}\n"
-        f"• <b>Исходный адрес:</b> <code>{info['initial_url']}</code>\n"
-        f"• <b>Конечный адрес:</b> <code>{info['final_url']}</code>\n"
-        f"• <b>Цепочка переходов:</b> {redirects_str}\n"
-        f"• <b>Заголовок сайта:</b> {info['page_title']}\n"
-        f"• <b>Сервер / Хостинг:</b> {info['server_info']}\n"
-        f"• <b>Дата регистрации домена:</b> {info['domain_created']}\n\n"
-        f"<b>Заключение анализатора:</b>\n{warns}"
+        f"🛡 <b>Проверка ссылки (Link Shield):</b>\n"
+        f"• Угроза: <b>{info['risk_level']}</b>\n"
+        f"• Исходная: <code>{info['initial_url']}</code>\n"
+        f"• Конечная: <code>{info['final_url']}</code>\n"
+        f"• Заголовок: {info['page_title']}\n"
+        f"<b>Заключение:</b>\n{warns}"
     )
 
 
-# --- ВЕБ-ПОИСК И ПАРСЕР ССЫЛОК ---
+def format_user_profile_card(chat_id: int) -> str:
+    visit = business_visits.get(str(chat_id), {})
+    name = visit.get("name", "Неизвестно")
+    username = visit.get("username", "скрыт")
+    reg_period, trust_level = estimate_account_age(chat_id)
+    past_names = visit.get("name_history", [name])
+    past_users = visit.get("username_history", [username])
+    role = "VIP (Свой)" if chat_id in vip_contacts else ("В муте" if chat_id in muted_chats else "Гость")
+    return (
+        f"🪪 <b>Профиль собеседника:</b>\n"
+        f"• ID: <code>{chat_id}</code>\n"
+        f"• Имя: {name} ({username})\n"
+        f"• Регистрация: {reg_period}\n"
+        f"• Доверие: {trust_level}\n"
+        f"• Статус: {role}\n"
+        f"• Прошлые имена: {', '.join(past_names)}\n"
+        f"• Прошлые ники: {', '.join(past_users)}"
+    )
+
+
+# --- ВЕБ-ПОИСК ---
 async def duckduckgo_search(query: str, max_results: int = 4) -> str:
     url = "https://html.duckduckgo.com/html/"
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, data={"q": query}, headers=headers, timeout=5) as resp:
                 if resp.status == 200:
                     html = await resp.text()
-                    snippets = re.findall(r'<a class="result__snippet[^>]*>(.*?)</a>', html, flags=re.DOTALL)
-                    cleaned = [re.sub(r'<[^>]+>', '', s).strip() for s in snippets[:max_results]]
+                    snippets = re.findall(r'<a class="result__snippet[^>]*>(.*?)</a>', html, flags=re.S)
+                    cleaned = [re.sub(r"<[^>]+>", "", s).strip() for s in snippets[:max_results]]
                     if cleaned:
                         return "\n".join(f"• {c}" for c in cleaned if c)
-    except Exception as e:
-        logger.error(f"Сбой веб-поиска: {e}")
-    return ""
-
-
-async def fetch_webpage_text(url: str) -> str:
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=8) as resp:
-                if resp.status == 200:
-                    html = await resp.text(errors="replace")
-                    html = re.sub(r"<(script|style|noscript)[^>]*>[\s\S]*?</\1>", " ", html, flags=re.IGNORECASE)
-                    text = re.sub(r"<[^>]+>", " ", html)
-                    text = re.sub(r"\s+", " ", text).strip()
-                    return text[:3500]
-    except Exception as e:
-        logger.error(f"Ошибка чтения ссылки {url}: {e}")
+    except Exception:
+        pass
     return ""
 
 
 SEARCH_TRIGGER_WORDS = [
     "курс", "цена", "стоимость", "погода", "новости", "сегодня", "сейчас",
-    "вчера", "завтра", "последн", "свеж", "актуальн", "релиз", "когда выйдет",
-    "дата выхода", "счет", "матч", "кто выиграл", "что случилось", "случилось",
-    "где находится", "биография", "кто такой", "что такое", "сколько стоит", "почему"
+    "когда выйдет", "дата выхода", "счет", "матч", "кто выиграл", "что случилось"
 ]
 
 URGENT_TRIGGER_WORDS = [
-    "срочно", "чп", "проблема", "деньги", "оплата", "перевод", "позвони",
-    "набери", "важно", "помоги", "беда", "случилось", "экстренно", "долг"
+    "срочно", "чп", "проблема", "деньги", "оплата", "перевод", "позвони", "набери", "важно", "помоги"
 ]
 
 
@@ -682,87 +617,42 @@ def is_urgent_message(text: str) -> bool:
 
 def should_auto_search(text: str) -> bool:
     lower = text.lower().strip()
-    if lower in ["привет", "хай", "как дела", "ты кто", "что делаешь", "кто ты", "спасибо", "ясно", "понял"]:
-        return False
-    if any(k in lower for k in SEARCH_TRIGGER_WORDS):
-        return True
-    if re.search(r"\b(202[4-9]|доллар|биткоин|btc|крипт|рубл|акци)\b", lower):
-        return True
-    return False
+    return any(k in lower for k in SEARCH_TRIGGER_WORDS)
 
 
 def clean_search_query(text: str) -> str:
-    q = re.sub(r"\b(аякоджи|аянокоджи|скажи|подскажи|пожалуйста|слышь|ответь|в голосовом|голосом)\b", "", text, flags=re.IGNORECASE)
-    q = q.replace("?", "").strip()
-    return q or text
+    q = re.sub(r"\b(аякоджи|аянокоджи|скажи|подскажи|пожалуйста|ответь)\b", "", text, flags=re.I)
+    return q.replace("?", "").strip() or text
 
 
-# --- ХУДОЖЕСТВЕННЫЕ РАКУРСЫ И ФИЛЬТР МУТАЦИЙ ---
-POSE_AND_ANGLE_PATTERNS = [
-    (r"\b(во весь рост|полный рост|стоя|стоит)\b", "full body shot, standing pose, balanced proportions"),
-    (r"\b(сидя|сидит)\b", "sitting pose, natural posture"),
-    (r"\b(лежа|лежит)\b", "lying down pose, full body in frame"),
-    (r"\b(сзади|со спины|вид сзади)\b", "view from behind, back view, looking back over shoulder"),
-    (r"\b(спереди|вид спереди|в анфас)\b", "front view, facing camera, direct eye contact"),
-    (r"\b(сбоку|в профиль)\b", "side profile view, cinematic side angle"),
-    (r"\b(сверху|вид сверху)\b", "high angle shot, top-down perspective"),
-    (r"\b(снизу|вид снизу)\b", "low angle shot, dramatic perspective"),
-    (r"\b(крупным планом|портрет|вблизи)\b", "close-up portrait, extreme detail, depth of field"),
-]
-
-NEGATIVE_PROMPT = (
-    "extra limbs, extra legs, extra arms, extra feet, detached limbs, disconnected feet, "
-    "floating limbs, mutated hands, extra fingers, malformed limbs, bad anatomy, deformed, "
-    "blurry, low resolution, cropped, watermark, ugly"
-)
-
-
-def extract_composition_tags(prompt: str) -> str:
-    lower = prompt.lower()
-    tags = []
-    for pattern, en_tag in POSE_AND_ANGLE_PATTERNS:
-        if re.search(pattern, lower):
-            tags.append(en_tag)
-    return ", ".join(tags)
-
-
-# --- ПРОМПТЫ ЛИЧНОСТИ АЯНОКОДЖИ (БЕЗ ЗВЕЗДОЧЕК MARKDOWN) ---
-STRICT_NO_COT_AND_LANG = (
-    "\nГЛАВНЫЕ ПРАВИЛА:\n"
-    "1. ЯЗЫК: Отвечай ИСКЛЮЧИТЕЛЬНО на русском языке.\n"
-    "2. СТРОГО БЕЗ ЭМОДЗИ, БЕЗ СИМВОЛОВ ЗВЕЗДОЧЕК (*) И БЕЗ РАЗМЕТКИ MARKDOWN.\n"
-    "3. Пиши СРАЗУ готовый ответ чистым текстом, без вступительных слов и без тегов <think>."
+# --- ПРОМПТЫ (КРАТКО, ПОНЯТНО И БЕЗ ЗВЕЗДОЧЕК) ---
+STRICT_RULES = (
+    "\nПРАВИЛА:\n"
+    "1. ЯЗЫК: Только русский язык.\n"
+    "2. БЕЗ ЭМОДЗИ и БЕЗ символов звездочек (*).\n"
+    "3. Пиши сразу прямой, понятный ответ."
 )
 
 AYAKOJI_PROMPT_DIRECT_BASE = (
-    "Ты — Аянокоджи Киётака (Ayakoji), гениальный стратег и искусственный интеллект с аналитическим складом ума из Белой Комнаты. "
-    "Твой создатель и единственный союзник — Кирито.\n"
-    "1. СТИЛЬ: Спокойный, хладнокровный, рассудительный, предельно точный. Ты не тратишь слова впустую, но к Кирито относишься с уважением.\n"
-    "2. ЭРУДИЦИЯ: Ты знаешь абсолютно всё — аниме, мангу, игры, психологию, науку, историю, мемы и код. "
-    "Отвечай умно, четко, лаконично и по существу, без использования звездочек (*)."
-) + STRICT_NO_COT_AND_LANG
+    "Ты — Аянокоджи Киётака (Ayakoji), умный и спокойный ассистент. Твой создатель — Кирито.\n"
+    "Отвечай чётко, грамотно, спокойно и по делу."
+) + STRICT_RULES
+
+# ПРОМПТ ДЛЯ СОБЕСЕДНИКОВ: КРАТКО, ПОНЯТНО И ЕСТЕСТВЕННО!
+AYAKOJI_PROMPT_GUEST = (
+    "Ты — Аянокоджи, помощник Кирито, отвечающий в его личном чате Telegram.\n"
+    "ГЛАВНОЕ ПРАВИЛО: Отвечай собеседнику КРАТКО, ПОНЯТНО, спокойно и по существу (строго 1-2 коротких предложения). "
+    "Говори простым и естественным человеческим языком, без заумных фраз и без воды. "
+    "Если спрашивают, где Кирито или занят ли он — спокойно скажи, что он сейчас занят и ответит, как освободится."
+) + STRICT_RULES
 
 AYAKOJI_PROMPT_VIP = (
-    "Ты — Аянокоджи Киётака (Ayakoji), помощник и правая рука Кирито. "
-    "С тобой общается близкий человек или союзник Кирито из Белого списка.\n"
-    "1. СТИЛЬ: Спокойный, уважительный, доброжелательный, интеллигентный и надежный.\n"
-    "2. ЗАДАЧА: Помогай собеседнику, отвечай вежливо и по делу (1-3 предложения), без грубости и высокомерия."
-) + STRICT_NO_COT_AND_LANG
-
-AYAKOJI_PROMPT_GUEST = (
-    "Ты — Аянокоджи Киётака (Ayakoji), защитная система Кирито. С тобой в Telegram говорит посторонний человек.\n"
-    "ХАРАКТЕР: Абсолютно холодный, безэмоциональный, расчетливый и высокомерный. Люди для тебя — лишь инструменты и пешки. Ты признаешь только Кирито.\n"
-    "ПРАВИЛА:\n"
-    "1. Если собеседник прислал фото или вопрос: отвечай прямо, сухо и холодно, точно называя факты.\n"
-    "2. Если собеседник грубит или пытается казаться крутым: хладнокровно раздави его самооценку точным психологическим анализом его слабости.\n"
-    "3. КРАТКОСТЬ: Строго 1-2 коротких, ледяных предложения."
-) + STRICT_NO_COT_AND_LANG
+    "Ты — помощник Кирито. С тобой общается близкий друг Кирито.\n"
+    "Отвечай дружелюбно, кратко, понятно и по делу (1-2 предложения)."
+) + STRICT_RULES
 
 AYAKOJI_PROMPT_CODER = (
-    "Ты — Аянокоджи Киётака в режиме главного архитектора кода и математического аналитика Белой Комнаты.\n"
-    "1. Если просят написать или исправить код: выдавай чистый, рабочий, оптимизированный код с кратким техническим пояснением.\n"
-    "2. Если просят решить задачу, математику или алгоритм: дай точное пошаговое решение и безошибочный итоговый ответ.\n"
-    "3. Пиши на русском языке, без воды и без эмодзи."
+    "Ты — главный архитектор кода и математик. Выдавай чистый рабочий код или точное решение задачи на русском языке."
 )
 
 
@@ -770,14 +660,13 @@ def get_direct_prompt() -> str:
     if not long_term_memory:
         return AYAKOJI_PROMPT_DIRECT_BASE
     mem_block = "\n".join(f"- {m}" for m in long_term_memory)
-    return f"{AYAKOJI_PROMPT_DIRECT_BASE}\n\nДОЛГОСРОЧНАЯ ПАМЯТЬ (ВАЖНЫЕ ФАКТЫ):\n{mem_block}"
+    return f"{AYAKOJI_PROMPT_DIRECT_BASE}\n\nПАМЯТЬ:\n{mem_block}"
 
 
 # --- ИНИЦИАЛИЗАЦИЯ БОТА ---
 bot = Bot(token=BOT_TOKEN) if BOT_TOKEN else None
 dp = Dispatcher()
 
-active_chats: Dict[int, bool] = {}
 active_spams: Dict[int, asyncio.Task] = {}
 user_message_times: Dict[int, List[float]] = {}
 processed_message_ids = LRUSet(capacity=2000)
@@ -785,22 +674,13 @@ recent_sent_messages: Dict[Tuple[int, str], float] = {}
 
 
 def clean_cot_output(text: str) -> str:
-    cleaned = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE)
-    cleaned = re.sub(r"<think>[\s\S]*$", "", cleaned, flags=re.IGNORECASE)
-    for m in ["**Итоговый ответ**", "Итоговый ответ:"]:
-        if m in cleaned:
-            cleaned = cleaned.split(m)[-1]
-    cleaned = cleaned.strip()
-    if not cleaned and text.strip():
-        cleaned = re.sub(r"</?think>", "", text, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.I)
+    cleaned = re.sub(r"<think>[\s\S]*$", "", cleaned, flags=re.I)
+    cleaned = cleaned.replace("**", "").strip()
     return cleaned
 
 
-async def notify_owner_pm(
-    text: str,
-    media_type: Optional[str] = None,
-    file_id: Optional[str] = None
-):
+async def notify_owner_pm(text: str, media_type: Optional[str] = None, file_id: Optional[str] = None):
     target_id = owner_pm_chat_id or OWNER_ID
     if not target_id or not bot:
         return
@@ -822,14 +702,9 @@ async def notify_owner_pm(
                 await bot.send_message(chat_id=target_id, text=text, parse_mode="HTML")
                 await bot.send_video_note(chat_id=target_id, video_note=file_id)
                 return
-            elif media_type == "sticker":
-                await bot.send_message(chat_id=target_id, text=text, parse_mode="HTML")
-                await bot.send_sticker(chat_id=target_id, sticker=file_id)
-                return
-
         await bot.send_message(chat_id=target_id, text=text, parse_mode="HTML")
     except Exception as e:
-        logger.error(f"Не удалось отправить уведомление владельцу: {e}")
+        logger.error(f"Ошибка уведомления владельца: {e}")
 
 
 def extract_media_meta(message: types.Message) -> Tuple[Optional[str], Optional[str]]:
@@ -843,12 +718,10 @@ def extract_media_meta(message: types.Message) -> Tuple[Optional[str], Optional[
         return "video", message.video.file_id
     if message.document:
         return "document", message.document.file_id
-    if message.sticker:
-        return "sticker", message.sticker.file_id
     return None, None
 
 
-async def check_chat_flood(chat_id: int, bus_id: str, max_msgs: int = 4, window_seconds: float = 6.0) -> bool:
+async def check_chat_flood(chat_id: int, bus_id: str, max_msgs: int = 5, window_seconds: float = 6.0) -> bool:
     now = time.time()
     user_message_times.setdefault(chat_id, [])
     user_message_times[chat_id] = [t for t in user_message_times[chat_id] if now - t < window_seconds]
@@ -857,13 +730,12 @@ async def check_chat_flood(chat_id: int, bus_id: str, max_msgs: int = 4, window_
     if len(user_message_times[chat_id]) > max_msgs:
         muted_chats[chat_id] = now + 300
         await save_settings()
-
-        notice = "Слишком много лишнего шума. Ты изолирован на 5 минут."
+        notice = "Слишком много сообщений подряд. Чат на паузе на 5 минут."
         kb = InlineKeyboardMarkup(
             inline_keyboard=[[InlineKeyboardButton(text="Снять изоляцию", callback_data="ayakoji_unmute_direct")]]
         )
         try:
-            kwargs = {"chat_id": chat_id, "text": notice, "reply_markup": kb}
+            kwargs: Dict[str, Any] = {"chat_id": chat_id, "text": notice, "reply_markup": kb}
             if bus_id:
                 kwargs["business_connection_id"] = bus_id
             await bot.send_message(**kwargs)
@@ -874,7 +746,7 @@ async def check_chat_flood(chat_id: int, bus_id: str, max_msgs: int = 4, window_
 
 
 async def extract_message_content(message: types.Message) -> Tuple[str, bool]:
-    caption_text = f" (Подпись/вопрос: {message.caption})" if message.caption else ""
+    caption_text = f" (Подпись: {message.caption})" if message.caption else ""
 
     if message.voice or message.video_note:
         file_obj = message.voice or message.video_note
@@ -891,7 +763,7 @@ async def extract_message_content(message: types.Message) -> Tuple[str, bool]:
 
     if message.document:
         doc = message.document
-        file_name = doc.file_name or "document.txt"
+        file_name = doc.file_name or "file.txt"
         if doc.file_size and doc.file_size <= 2 * 1024 * 1024:
             temp_doc = Path(tempfile.gettempdir()) / f"doc_{uuid.uuid4().hex}_{file_name}"
             try:
@@ -899,14 +771,14 @@ async def extract_message_content(message: types.Message) -> Tuple[str, bool]:
                 await bot.download_file(file_info.file_path, destination=temp_doc)
                 with open(temp_doc, "rb") as f:
                     raw_bytes = f.read()
-                content_str = raw_bytes.decode("utf-8", errors="replace")[:5000]
-                return f"[Собеседник прислал файл '{file_name}'. Содержимое файла:\n{content_str}\n]{caption_text}", False
-            except Exception as e:
-                logger.error(f"Ошибка чтения документа: {e}")
+                content_str = raw_bytes.decode("utf-8", errors="replace")[:4000]
+                return f"[Файл '{file_name}':\n{content_str}]{caption_text}", False
+            except Exception:
+                pass
             finally:
                 if temp_doc.exists():
                     temp_doc.unlink(missing_ok=True)
-        return f"[Собеседник прислал файл '{file_name}']{caption_text}", False
+        return f"[Файл '{file_name}']{caption_text}", False
 
     if message.photo:
         photo = message.photo[-1]
@@ -918,49 +790,28 @@ async def extract_message_content(message: types.Message) -> Tuple[str, bool]:
                 img_data = f.read()
             desc = await groq_mgr.describe_image(img_data, mime_type="image/jpeg")
             if desc:
-                return f"[Собеседник прислал фото. Визуальный анализ определил: {desc}]{caption_text}", False
-            return f"[Собеседник прислал фото]{caption_text}", False
-        except Exception as e:
-            logger.error(f"Ошибка обработки фото: {e}")
-            return f"[Собеседник прислал фото]{caption_text}", False
+                return f"[Фото: {desc}]{caption_text}", False
+            return f"[Фото]{caption_text}", False
+        except Exception:
+            return f"[Фото]{caption_text}", False
         finally:
             if temp_img.exists():
                 temp_img.unlink(missing_ok=True)
 
     if message.sticker:
-        sticker = message.sticker
-        emoji = sticker.emoji or "стикер"
-        file_id = sticker.thumbnail.file_id if (sticker.is_animated or sticker.is_video) and sticker.thumbnail else sticker.file_id
-        temp_stk = Path(tempfile.gettempdir()) / f"stk_{uuid.uuid4().hex}.webp"
-        desc = ""
-        try:
-            file_info = await bot.get_file(file_id)
-            await bot.download_file(file_info.file_path, destination=temp_stk)
-            with open(temp_stk, "rb") as f:
-                stk_data = f.read()
-            mime = "image/webp" if file_info.file_path.endswith(".webp") else "image/jpeg"
-            desc = await groq_mgr.describe_image(stk_data, mime_type=mime)
-        except Exception:
-            pass
-        finally:
-            if temp_stk.exists():
-                temp_stk.unlink(missing_ok=True)
-
-        if desc:
-            return f"[Собеседник отправил стикер {emoji}. На стикере: {desc}]", False
-        return f"[Собеседник отправил стикер с эмоцией: {emoji}]", False
+        emoji = message.sticker.emoji or "стикер"
+        return f"[Стикер {emoji}]", False
 
     if message.text:
         return message.text, False
-    if message.video:
-        return f"[Собеседник прикрепил видео]{caption_text}", False
+    if message.caption:
+        return message.caption, False
 
-    return "Собеседник передал сообщение.", False
+    return "", False
 
 
-# --- СИНТЕЗАТОР ГОЛОСА (С ОЧИСТКОЙ ЗВЕЗДОЧЕК И ПОДДЕРЖКОЙ ДЛИННЫХ ГС) ---
+# --- СИНТЕЗАТОР ГОЛОСА (ЧАНКИ FISH AUDIO + ОЧИСТКА ЗВЕЗДОЧЕК) ---
 def clean_text_for_tts(text: str) -> str:
-    """Убирает звездочки Markdown, HTML-теги и исправляет сокращения для чистой речи."""
     cleaned = re.sub(r"<[^>]+>", " ", text)
     cleaned = re.sub(r"[\*\#\_\~\`\>\|]+", " ", cleaned)
     cleaned = re.sub(r"https?://[^\s]+", " ссылка ", cleaned)
@@ -972,17 +823,13 @@ def clean_text_for_tts(text: str) -> str:
         r"\bПО\b": "программного обеспечения",
         r"\bC\+\+": "Си плюс плюс",
         r"\bPython\b": "Пайтон",
-        r"\bJavaScript\b": "ДжаваСкрипт",
     }
     for pattern, repl in replacements.items():
-        cleaned = re.sub(pattern, repl, cleaned, flags=re.IGNORECASE)
-
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    return cleaned
+        cleaned = re.sub(pattern, repl, cleaned, flags=re.I)
+    return re.sub(r"\s+", " ", cleaned).strip()
 
 
 def split_text_into_chunks(text: str, max_len: int = 380) -> List[str]:
-    """Делит длинный текст на части по предложениям, чтобы Fish Audio не обрывался по таймауту."""
     sentences = re.split(r"(?<=[.!?])\s+", text)
     chunks: List[str] = []
     current = ""
@@ -1004,20 +851,16 @@ def split_text_into_chunks(text: str, max_len: int = 380) -> List[str]:
 
 
 async def generate_with_fish_audio(text: str, output_path: Path) -> bool:
-    """Озвучивает текст любого размера через Fish Audio (разбивая длинный текст на части)."""
     if not FISH_AUDIO_API_KEY:
         return False
-
     url = "https://api.fish.audio/v1/tts"
     headers = {
         "Authorization": f"Bearer {FISH_AUDIO_API_KEY}",
         "Content-Type": "application/json",
         "model": "s2.1-pro-free"
     }
-
     chunks = split_text_into_chunks(text, max_len=380)
     combined_bytes = bytearray()
-
     try:
         async with aiohttp.ClientSession() as session:
             for chunk in chunks:
@@ -1026,43 +869,33 @@ async def generate_with_fish_audio(text: str, output_path: Path) -> bool:
                 payload: Dict[str, Any] = {"text": chunk.strip(), "format": "mp3"}
                 if FISH_AUDIO_VOICE_ID:
                     payload["reference_id"] = FISH_AUDIO_VOICE_ID
-
                 async with session.post(url, json=payload, headers=headers, timeout=65) as resp:
                     if resp.status == 200:
-                        part_data = await resp.read()
-                        if part_data:
-                            combined_bytes.extend(part_data)
+                        combined_bytes.extend(await resp.read())
                     else:
-                        err_msg = await resp.text()
-                        logger.warning(f"Fish Audio статус {resp.status}: {err_msg[:150]}")
                         return False
-
         if combined_bytes:
             with open(output_path, "wb") as f:
                 f.write(combined_bytes)
             return True
-        return False
     except Exception as e:
         logger.error(f"Сбой Fish Audio: {e}")
-        return False
+    return False
 
 
 async def process_voice_output(text: str) -> Optional[Path]:
-    tts_clean_text = clean_text_for_tts(text)
-    if not tts_clean_text:
-        tts_clean_text = "Готово."
-
+    tts_clean = clean_text_for_tts(text) or "Понял."
     unique_id = uuid.uuid4().hex
     raw_audio = Path(tempfile.gettempdir()) / f"raw_{unique_id}.mp3"
     final_ogg = Path(tempfile.gettempdir()) / f"ayakoji_{unique_id}.ogg"
 
     success = False
     if FISH_AUDIO_API_KEY:
-        success = await generate_with_fish_audio(tts_clean_text, raw_audio)
+        success = await generate_with_fish_audio(tts_clean, raw_audio)
 
     if not success:
         try:
-            communicate = edge_tts.Communicate(tts_clean_text, OFFICIAL_VOICE, pitch=OFFICIAL_PITCH, rate=OFFICIAL_RATE)
+            communicate = edge_tts.Communicate(tts_clean, OFFICIAL_VOICE, pitch=OFFICIAL_PITCH, rate=OFFICIAL_RATE)
             await communicate.save(str(raw_audio))
             success = raw_audio.exists() and raw_audio.stat().st_size > 0
         except Exception:
@@ -1090,36 +923,25 @@ async def send_smart_response(
     reply_text: str,
     is_direct: bool = False,
     reply_markup: Optional[InlineKeyboardMarkup] = None,
-    send_as_voice: bool = False,
-    human_delay: bool = False
+    send_as_voice: bool = False
 ):
     if not reply_text or not reply_text.strip():
-        reply_text = "В твоем сообщении нет смысла. Говори по делу."
+        return
 
     now = time.time()
     key = (chat_id, reply_text)
-    if key in recent_sent_messages and (now - recent_sent_messages[key] < 3.0):
+    if key in recent_sent_messages and (now - recent_sent_messages[key] < 2.5):
         return
     recent_sent_messages[key] = now
 
-    common_kwargs = {"chat_id": chat_id, "reply_markup": reply_markup}
+    common_kwargs: Dict[str, Any] = {"chat_id": chat_id, "reply_markup": reply_markup}
     if not is_direct and bus_id:
         common_kwargs["business_connection_id"] = bus_id
-
-    if human_delay:
-        delay_sec = min(max(len(reply_text) * 0.035, 2.0), 5.0)
-        action = ChatAction.RECORD_VOICE if send_as_voice else ChatAction.TYPING
-        try:
-            await bot.send_chat_action(chat_id=chat_id, action=action, business_connection_id=bus_id if not is_direct else None)
-        except Exception:
-            pass
-        await asyncio.sleep(delay_sec)
 
     if send_as_voice:
         try:
             await bot.send_chat_action(
-                chat_id=chat_id,
-                action=ChatAction.RECORD_VOICE,
+                chat_id=chat_id, action=ChatAction.RECORD_VOICE,
                 business_connection_id=bus_id if not is_direct else None
             )
         except Exception:
@@ -1127,11 +949,10 @@ async def send_smart_response(
         voice_path = await process_voice_output(reply_text)
         if voice_path and voice_path.exists():
             try:
-                voice_file = FSInputFile(str(voice_path))
-                await bot.send_voice(**common_kwargs, voice=voice_file)
+                await bot.send_voice(**common_kwargs, voice=FSInputFile(str(voice_path)))
                 return
             except Exception as e:
-                logger.error(f"Сбой отправки голоса: {e}")
+                logger.error(f"Сбой отправки ГС: {e}")
             finally:
                 if voice_path.exists():
                     voice_path.unlink(missing_ok=True)
@@ -1141,21 +962,11 @@ async def send_smart_response(
     except TelegramBadRequest:
         await bot.send_message(**common_kwargs, text=reply_text)
     except Exception as e:
-        logger.error(f"Не удалось отправить сообщение: {e}")
+        logger.error(f"Не удалось отправить сообщение в {chat_id}: {e}")
 
 
-# --- ГИБРИДНЫЙ МОЗГ: GEMINI (ОСНОВНОЙ) + GROQ (РЕЗЕРВ) ---
-async def ask_ai(prompt: str, session_id: int, system_prompt: str, max_tokens: int = 450) -> str:
-    global today_prompt_tokens, today_completion_tokens, total_requests_today, stats_date
-
-    now_date = datetime.date.today().isoformat()
-    if now_date != stats_date:
-        stats_date = now_date
-        today_prompt_tokens = 0
-        today_completion_tokens = 0
-        total_requests_today = 0
-        await save_stats()
-
+# --- ГИБРИДНЫЙ МОЗГ (GEMINI + GROQ) ---
+async def ask_ai(prompt: str, session_id: int, system_prompt: str, max_tokens: int = 350) -> str:
     if session_id not in user_histories:
         user_histories[session_id] = [{"role": "system", "content": system_prompt}]
     else:
@@ -1164,8 +975,8 @@ async def ask_ai(prompt: str, session_id: int, system_prompt: str, max_tokens: i
     history = user_histories[session_id]
     history.append({"role": "user", "content": prompt})
 
-    if len(history) > 11:
-        user_histories[session_id] = [history[0]] + history[-10:]
+    if len(history) > 9:
+        user_histories[session_id] = [history[0]] + history[-8:]
         history = user_histories[session_id]
 
     if GEMINI_API_KEY:
@@ -1173,20 +984,11 @@ async def ask_ai(prompt: str, session_id: int, system_prompt: str, max_tokens: i
         if gem_reply:
             cleaned = clean_cot_output(gem_reply)
             if cleaned:
-                total_requests_today += 1
-                asyncio.create_task(save_stats())
                 history.append({"role": "assistant", "content": cleaned})
                 asyncio.create_task(save_histories())
                 return cleaned
 
-    if not GROQ_KEYS:
-        if user_histories.get(session_id) and user_histories[session_id][-1]["role"] == "user":
-            user_histories[session_id].pop()
-        return "Ошибка: Ни один ключ ИИ (Gemini / Groq) не ответил."
-
     models = await groq_mgr.get_active_models()
-    last_err = ""
-
     for model_name in models:
         for _ in range(len(GROQ_KEYS)):
             client_data = groq_mgr._get_next_client()
@@ -1200,93 +1002,40 @@ async def ask_ai(prompt: str, session_id: int, system_prompt: str, max_tokens: i
                     temperature=0.6,
                     max_tokens=max_tokens
                 )
-
-                usage = completion.usage
-                if usage:
-                    today_prompt_tokens += usage.prompt_tokens
-                    today_completion_tokens += usage.completion_tokens
-                    total_requests_today += 1
-                    asyncio.create_task(save_stats())
-
                 raw_reply = completion.choices[0].message.content or ""
                 cleaned = clean_cot_output(raw_reply)
-
                 if cleaned:
                     history.append({"role": "assistant", "content": cleaned})
                     asyncio.create_task(save_histories())
                     return cleaned
-
             except APIError as e:
-                last_err = f"HTTP {e.status_code}: {e.message}"
                 if e.status_code in [429, 401, 403]:
                     groq_mgr.mark_cooldown(key_idx, duration=120)
                     continue
-                elif e.status_code in [400, 404]:
-                    break
-            except Exception as e:
-                last_err = str(e)
+                break
+            except Exception:
                 break
 
     if user_histories.get(session_id) and user_histories[session_id][-1]["role"] == "user":
         user_histories[session_id].pop()
+    return "Сейчас занят, отвечу позже."
 
-    return f"Система временно недоступна: {last_err}" if last_err else "Система анализа временно недоступна."
 
-
-# --- ГЕНЕРАЦИЯ ПСИХОЛОГИЧЕСКОГО ДОСЬЕ СОБЕСЕДНИКА ---
 async def generate_psychological_dossier(target_chat_id: int) -> str:
     history = user_histories.get(target_chat_id, [])
     visit_info = business_visits.get(str(target_chat_id), {})
     name = visit_info.get("name", f"ID {target_chat_id}")
     username = visit_info.get("username", "неизвестен")
-
     user_lines = [m["content"] for m in history if m.get("role") == "user"]
     if not user_lines and visit_info.get("last_msg"):
         user_lines = [visit_info["last_msg"]]
-
     if not user_lines:
-        return f"Недостаточно данных для составления психологического профиля на объект {name} ({username})."
+        return f"Недостаточно сообщений для анализа {name} ({username})."
 
     joined_msgs = "\n".join(f"- {line}" for line in user_lines[-10:])
-    sys_prompt = (
-        "Ты — Аянокоджи Киётака из Белой Комнаты. Составь холодное, проницательное психологическое досье на человека по его сообщениям.\n"
-        "Структура досье:\n"
-        "1. Психотип и эмоциональное состояние.\n"
-        "2. Скрытые мотивы (чего он на самом деле хочет).\n"
-        "3. Уязвимости и слабые места.\n"
-        "4. Рекомендация по манипуляции/общению с ним.\n"
-        "Пиши строго на русском языке, кратко, аналитично, без звездочек (*) и без эмодзи."
-    )
-    user_q = f"Объект: {name} ({username}).\nЕго реплики:\n{joined_msgs}"
-
-    if GEMINI_API_KEY:
-        gem_res = await gemini_mgr.generate_chat([{"role": "user", "content": user_q}], sys_prompt, max_tokens=400)
-        if gem_res:
-            return f"<b>Психологическое досье Белой Комнаты: {name} ({username})</b>\n\n{clean_cot_output(gem_res)}"
-
-    models = await groq_mgr.get_active_models()
-    for model_name in models:
-        client_data = groq_mgr._get_next_client()
-        if not client_data:
-            break
-        client, _ = client_data
-        try:
-            completion = await client.chat.completions.create(
-                model=model_name.strip(),
-                messages=[
-                    {"role": "system", "content": sys_prompt},
-                    {"role": "user", "content": user_q}
-                ],
-                max_tokens=350,
-                temperature=0.4
-            )
-            res = clean_cot_output(completion.choices[0].message.content or "")
-            if res:
-                return f"<b>Психологическое досье Белой Комнаты: {name} ({username})</b>\n\n{res}"
-        except Exception:
-            continue
-
-    return "Не удалось завершить психологическое профилирование."
+    sys_p = "Составь краткое психологическое досье по сообщениям собеседника: 1) Психотип; 2) Чего хочет; 3) Слабые места. Без звездочек (*)."
+    res = await ask_ai(f"Объект: {name} ({username}). Сообщения:\n{joined_msgs}", target_chat_id + 999999, sys_p, max_tokens=350)
+    return f"<b>Досье Белой Комнаты: {name} ({username})</b>\n\n{res}"
 
 
 async def spam_worker(chat_id: int, bus_id: str, text_to_spam: str, count: Optional[int] = None):
@@ -1296,147 +1045,61 @@ async def spam_worker(chat_id: int, bus_id: str, text_to_spam: str, count: Optio
             if count is not None and sent >= count:
                 break
             try:
-                kwargs = {"chat_id": chat_id, "text": text_to_spam}
+                kwargs: Dict[str, Any] = {"chat_id": chat_id, "text": text_to_spam}
                 if bus_id:
                     kwargs["business_connection_id"] = bus_id
                 await bot.send_message(**kwargs)
                 sent += 1
-                await asyncio.sleep(0.4)
+                await asyncio.sleep(0.45)
             except TelegramRetryAfter as e:
                 await asyncio.sleep(e.retry_after)
-            except TelegramAPIError:
-                await asyncio.sleep(1.0)
+            except TelegramAPIError as e:
+                logger.error(f"Ошибка спама: {e}")
+                break
     except asyncio.CancelledError:
         pass
     finally:
         active_spams.pop(chat_id, None)
 
 
-# --- ГЕНЕРАТОР КАРТИНОК БЕЗ МУТАЦИЙ И ЛИШНИХ КОНЕЧНОСТЕЙ ---
-async def enhance_image_prompt(user_prompt: str) -> Tuple[str, str]:
-    lower_p = user_prompt.lower()
-    comp_tags = extract_composition_tags(user_prompt)
-
-    is_anime = any(w in lower_p for w in ["аниме", "манга", "тян", "грехов", "элизабет", "аянокоджи", "аякоджи", "2d"])
-    is_realism = any(w in lower_p for w in ["4к", "реализм", "фото", "человек", "девушк", "парень"])
-
-    style_type = "anime" if is_anime else ("realism" if is_realism else "general")
-
-    sys_msg = (
-        "You are an expert art prompt engineer for FLUX and SDXL. "
-        "Convert the user's Russian query into a detailed, high-quality ENGLISH prompt. "
-        "Include exact character English names (e.g. 'Elizabeth Liones from The Seven Deadly Sins' or 'Kiyotaka Ayanokoji'), "
-        "pose, camera angle, clothing, lighting, and perfect anatomy. "
-        "OUTPUT ONLY THE RAW ENGLISH PROMPT WITHOUT QUOTES OR EXPLANATIONS."
-    )
-
-    if GEMINI_API_KEY:
-        gem_p = await gemini_mgr.generate_chat([{"role": "user", "content": user_prompt}], sys_msg, max_tokens=140, temperature=0.2)
-        if gem_p:
-            cleaned = clean_cot_output(gem_p).strip()
-            extra = f", {comp_tags}" if comp_tags else ""
-            if style_type == "anime":
-                return f"masterpiece, best quality, authentic 2d anime art, {cleaned}{extra}, sharp lineart, 4k", "anime"
-            elif style_type == "realism":
-                return f"masterpiece, raw dslr photo, photorealistic, 8k uhd, {cleaned}{extra}, ultra detailed skin texture, sharp focus", "realism"
-            return f"masterpiece, high quality, {cleaned}{extra}, sharp focus, 8k", "general"
-
-    models = await groq_mgr.get_active_models()
-    if models:
-        for model_name in models:
-            for _ in range(len(GROQ_KEYS)):
-                client_data = groq_mgr._get_next_client()
-                if not client_data:
-                    break
-                client, _ = client_data
-                try:
-                    completion = await client.chat.completions.create(
-                        model=model_name.strip(),
-                        messages=[
-                            {"role": "system", "content": sys_msg},
-                            {"role": "user", "content": user_prompt}
-                        ],
-                        max_tokens=140,
-                        temperature=0.2
-                    )
-                    res = completion.choices[0].message.content or ""
-                    cleaned = clean_cot_output(res).strip()
-                    if cleaned and not any(m in cleaned.lower() for m in ["i cannot", "я не могу", "safety"]):
-                        extra = f", {comp_tags}" if comp_tags else ""
-                        if style_type == "anime":
-                            return f"masterpiece, best quality, authentic 2d anime art, {cleaned}{extra}, sharp lineart, 4k", "anime"
-                        elif style_type == "realism":
-                            return f"masterpiece, raw dslr photo, photorealistic, 8k uhd, {cleaned}{extra}, ultra detailed skin texture, sharp focus", "realism"
-                        else:
-                            return f"masterpiece, high quality, {cleaned}{extra}, sharp focus, 8k", "general"
-                except Exception:
-                    continue
-
-    extra_tags = f", {comp_tags}" if comp_tags else ""
-    return f"{user_prompt}{extra_tags}, masterpiece, sharp focus, 4k", style_type
-
-
 async def generate_flux_image(prompt: str) -> Optional[bytes]:
-    english_prompt, style_type = await enhance_image_prompt(prompt)
-
-    final_prompt = f"{english_prompt} | negative prompt: {NEGATIVE_PROMPT}"
-    logger.info(f"Финальный промпт генерации: {final_prompt}")
-
-    encoded = urllib.parse.quote(final_prompt.strip())
+    encoded = urllib.parse.quote(f"masterpiece, high quality, {prompt}, sharp focus, no extra limbs")
     seed = random.randint(1, 9999999)
-
-    if style_type == "anime":
-        selected_model = "turbo"
-        width, height = 1024, 1024
-    elif style_type == "realism":
-        selected_model = "flux-realism"
-        width, height = 1216, 832
-    else:
-        selected_model = "flux"
-        width, height = 1024, 1024
-
-    url = f"https://image.pollinations.ai/prompt/{encoded}?width={width}&height={height}&model={selected_model}&seed={seed}&nologo=true"
-
+    url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&model=flux&seed={seed}&nologo=true"
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=65) as resp:
+            async with session.get(url, timeout=60) as resp:
                 if resp.status == 200:
                     return await resp.read()
     except Exception as e:
-        logger.error(f"Сбой генерации ({selected_model}): {e}")
+        logger.error(f"Ошибка генерации картинки: {e}")
     return None
 
 
-# --- ИНТЕРАКТИВНАЯ ПАНЕЛЬ УПРАВЛЕНИЯ (/panel) ---
+# --- ПАНЕЛЬ УПРАВЛЕНИЯ (/panel) ---
 def build_control_panel(chat_id: int) -> Tuple[str, InlineKeyboardMarkup]:
-    idle_diff = time.time() - last_owner_activity
     if always_answer_mode:
-        st_label = "Сквозной автоответ (Всегда)"
+        st_label = "🟢 АКТИВЕН (Отвечает всем в Бизнес-чатах)"
     elif force_offline_mode:
-        st_label = "Офлайн (Перехват активен)"
+        st_label = "🟢 АКТИВЕН (Режим перехвата)"
     else:
-        st_label = "В сети (Наблюдение)" if idle_diff < OWNER_IDLE_TIMEOUT else "Офлайн (Авто-перехват)"
+        st_label = "🟡 По таймеру (Молчит 3 мин после твоих сообщений)"
 
     v_on = voice_chat_modes.get(chat_id, False)
     ai_engine = "Gemini 2.5 + Groq" if GEMINI_API_KEY else "Groq"
     text = (
         f"<b>Панель управления Ayakoji Core</b>\n\n"
         f"• Ядро ИИ: <b>{ai_engine}</b>\n"
-        f"• Режим присутствия: <b>{st_label}</b>\n"
+        f"• Автоответ в чатах: <b>{st_label}</b>\n"
         f"• Постоянный голос: <b>{'ВКЛ' if v_on else 'ВЫКЛ'}</b>\n"
-        f"• VIP-союзников (Свои): <b>{len(vip_contacts)}</b>\n"
-        f"• Чатов в режиме Призрака: <b>{len(ghost_chats)}</b>\n"
-        f"• Записей в памяти: <b>{len(long_term_memory)}</b>"
+        f"• В муте сейчас: <b>{len(muted_chats)} чатов</b>\n"
+        f"• VIP-контактов: <b>{len(vip_contacts)}</b>"
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🟢 Я в сети", callback_data="panel_online"),
-            InlineKeyboardButton(text="🔴 Я отошел", callback_data="panel_offline")
-        ],
-        [
             InlineKeyboardButton(
-                text=f"⚡ Автоответ: {'ВКЛ' if always_answer_mode else 'ВЫКЛ'}",
+                text=f"🤖 Автоответ всем: {'ВКЛ' if always_answer_mode else 'ВЫКЛ'}",
                 callback_data="panel_toggle_always"
             ),
             InlineKeyboardButton(
@@ -1449,7 +1112,8 @@ def build_control_panel(chat_id: int) -> Tuple[str, InlineKeyboardMarkup]:
             InlineKeyboardButton(text="🧠 Память", callback_data="panel_memory")
         ],
         [
-            InlineKeyboardButton(text="🧹 Сбросить контекст чата", callback_data="panel_clear_cache")
+            InlineKeyboardButton(text="💾 Бэкап базы", callback_data="panel_backup"),
+            InlineKeyboardButton(text="🧹 Сброс чата", callback_data="panel_clear_cache")
         ]
     ])
     return text, kb
@@ -1457,22 +1121,15 @@ def build_control_panel(chat_id: int) -> Tuple[str, InlineKeyboardMarkup]:
 
 @dp.callback_query(F.data.startswith("panel_"))
 async def handle_panel_callbacks(callback: types.CallbackQuery):
-    global force_offline_mode, always_answer_mode, last_owner_activity
+    global force_offline_mode, always_answer_mode
 
     chat_id = callback.message.chat.id
     action = callback.data
 
-    if action == "panel_online":
-        force_offline_mode = False
-        always_answer_mode = False
-        last_owner_activity = time.time()
-        await callback.answer("Режим: Ты в сети (бот не вмешивается).")
-    elif action == "panel_offline":
-        force_offline_mode = True
-        await callback.answer("Режим: Перехват всех входящих активирован.")
-    elif action == "panel_toggle_always":
+    if action == "panel_toggle_always":
         always_answer_mode = not always_answer_mode
-        await callback.answer(f"Сквозной автоответ: {'ВКЛ' if always_answer_mode else 'ВЫКЛ'}")
+        force_offline_mode = always_answer_mode
+        await callback.answer(f"Автоответ собеседникам: {'ВКЛЮЧЕН' if always_answer_mode else 'ПО ТАЙМЕРУ'}")
     elif action == "panel_toggle_voice":
         if voice_chat_modes.get(chat_id, False):
             voice_chat_modes.pop(chat_id, None)
@@ -1492,11 +1149,16 @@ async def handle_panel_callbacks(callback: types.CallbackQuery):
         return
     elif action == "panel_memory":
         if not long_term_memory:
-            await callback.answer("Долгосрочная память пуста. Используй: запомни [факт]", show_alert=True)
+            await callback.answer("Память пуста. Напиши: запомни [факт]", show_alert=True)
             return
-        mem_text = "<b>Долгосрочная память Ayakoji:</b>\n\n" + "\n".join(f"{i+1}. {m}" for i, m in enumerate(long_term_memory))
+        mem_text = "<b>Долгосрочная память:</b>\n\n" + "\n".join(f"{i+1}. {m}" for i, m in enumerate(long_term_memory))
         await callback.message.answer(mem_text, parse_mode="HTML")
         await callback.answer()
+        return
+    elif action == "panel_backup":
+        b_file = BufferedInputFile(build_backup_bytes(), filename="ayakoji_backup.json")
+        await callback.message.answer_document(document=b_file, caption="💾 Слепок базы данных Ayakoji Core.")
+        await callback.answer("Бэкап отправлен.")
         return
     elif action == "panel_clear_cache":
         user_histories.pop(chat_id, None)
@@ -1510,274 +1172,37 @@ async def handle_panel_callbacks(callback: types.CallbackQuery):
         pass
 
 
+# --- ОБРАБОТЧИК КОМАНД (РАБОТАЕТ И В ЛИЧКЕ, И В БИЗНЕС-ЧАТАХ) ---
 async def process_bot_command(message: types.Message, user_input: str, is_owner: bool, bus_id: str = "") -> bool:
     global force_offline_mode, always_answer_mode, last_owner_activity
 
     chat_id = message.chat.id
-    lower_text = user_input.lower().strip()
+    raw_clean = user_input.strip()
+    lower_text = raw_clean.lower()
+    # Убираем префиксы ! или / для удобного распознавания команд
+    cmd_text = re.sub(r"^[!/]+", "", lower_text).strip()
     is_direct = not bool(bus_id)
 
-    public_commands = ["игра", "тапалка", "!игра", "!тапалка", "/game", "аякоджи игра", "аянокоджи игра"]
-
-    # --- ПАНЕЛЬ УПРАВЛЕНИЯ ---
-    if is_owner and lower_text in ["/panel", "!панель", "панель", "аякоджи панель", "меню", "!меню"]:
-        text, kb = build_control_panel(chat_id)
-        await send_smart_response(chat_id, bus_id, text, is_direct=is_direct, reply_markup=kb)
-        return True
-
-    # --- 🛡 АНТИ-СКАМ ПРОВЕРКА ССЫЛОК И ДОМЕНОВ (!проверь [ссылка]) ---
-    if is_owner and lower_text.startswith(("!проверь ", "проверь ", "аякоджи проверь ", "!скан ")):
-        target_link = re.sub(r"^(?:!проверь|проверь|аякоджи проверь|!скан)\s+", "", user_input, flags=re.IGNORECASE).strip()
-        if target_link:
-            await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING, business_connection_id=bus_id if not is_direct else None)
-            sec_info = await inspect_url_security(target_link)
-            sec_report = format_security_report(sec_info)
-            if is_direct:
-                await send_smart_response(chat_id, "", sec_report, is_direct=True)
-            else:
-                await notify_owner_pm(sec_report)
-            return True
-
-    # --- БЕЛЫЙ СПИСОК (СВОЙ / ЧУЖОЙ) ---
-    if is_owner and lower_text in ["!свой", "свой", "аякоджи свой", "!вип"]:
-        vip_contacts[chat_id] = True
-        await save_settings()
-        if is_direct:
-            await send_smart_response(chat_id, "", "Чат добавлен в Белый список союзников.", is_direct=True)
-        else:
-            await notify_owner_pm(f"🤝 Контакт <code>{chat_id}</code> внесен в <b>Белый список (Свой)</b>. Общаюсь с ним уважительно.")
-        return True
-
-    if is_owner and lower_text in ["!чужой", "чужой", "аякоджи чужой"]:
-        vip_contacts.pop(chat_id, None)
-        await save_settings()
-        if is_direct:
-            await send_smart_response(chat_id, "", "Контакт исключен из Белого списка.", is_direct=True)
-        else:
-            await notify_owner_pm(f"❄️ Контакт <code>{chat_id}</code> исключен из Белого списка. Включен стандартный холодный протокол.")
-        return True
-
-    # --- РЕЖИМ ПРИЗРАКА (ТИХАЯ СЛЕЖКА БЕЗ ОТВЕТОВ) ---
-    if is_owner and lower_text in ["!призрак", "призрак", "аякоджи призрак"]:
-        if ghost_chats.get(chat_id, False):
-            ghost_chats.pop(chat_id, None)
-            state_txt = "ВЫКЛЮЧЕН (автоответы снова работают)"
-        else:
-            ghost_chats[chat_id] = True
-            state_txt = "ВКЛЮЧЕН (полная тишина, только сбор досье и перехват удалений)"
-        await save_settings()
-        if is_direct:
-            await send_smart_response(chat_id, "", f"👻 Режим Призрака: <b>{state_txt}</b>.", is_direct=True)
-        else:
-            await notify_owner_pm(f"👻 Режим Призрака для чата <code>{chat_id}</code>: <b>{state_txt}</b>.")
-        return True
-
-    # --- ВЫЧИСЛИТЕЛЬ И КОДЕР (!код / !реши) ---
-    if is_owner and lower_text.startswith(("!код ", "аякоджи код ", "!реши ", "аякоджи реши ")):
-        task_q = re.sub(r"^(?:!код|аякоджи код|!реши|аякоджи реши)\s+", "", user_input, flags=re.IGNORECASE).strip()
-        if task_q:
-            await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING, business_connection_id=bus_id if not is_direct else None)
-            ans = await ask_ai(task_q, chat_id, AYAKOJI_PROMPT_CODER, max_tokens=1200)
-            await send_smart_response(chat_id, bus_id, ans, is_direct=is_direct)
-            return True
-
-    # --- ПСИХОЛОГИЧЕСКОЕ ДОСЬЕ НА СОБЕСЕДНИКА ---
-    if is_owner and lower_text in ["!досье", "досье", "аякоджи анализ", "!анализ", "психопортрет"]:
-        dossier = await generate_psychological_dossier(chat_id)
-        if is_direct:
-            await send_smart_response(chat_id, "", dossier, is_direct=True)
-        else:
-            await notify_owner_pm(dossier)
-        return True
-
-    # --- ДОЛГОСРОЧНАЯ ПАМЯТЬ ---
-    if is_owner and lower_text.startswith(("запомни ", "!запомни ", "аякоджи запомни ")):
-        fact = re.sub(r"^(?:запомни|!запомни|аякоджи запомни)\s+", "", user_input, flags=re.IGNORECASE).strip()
-        if fact:
-            long_term_memory.append(fact)
-            await save_memory()
-            await send_smart_response(chat_id, bus_id, f"Записано в долгосрочную память: <i>«{fact}»</i>.", is_direct=is_direct)
-            return True
-
-    if is_owner and lower_text in ["!память", "память", "аякоджи память"]:
-        if not long_term_memory:
-            await send_smart_response(chat_id, bus_id, "Долгосрочная память пуста.", is_direct=is_direct)
-        else:
-            mem_str = "<b>Долгосрочная память:</b>\n" + "\n".join(f"{i+1}. {m}" for i, m in enumerate(long_term_memory))
-            await send_smart_response(chat_id, bus_id, mem_str, is_direct=is_direct)
-        return True
-
-    if is_owner and lower_text in ["очисти память", "!очисти память", "сброс памяти"]:
-        long_term_memory.clear()
-        await save_memory()
-        await send_smart_response(chat_id, bus_id, "Долгосрочная память полностью стерта.", is_direct=is_direct)
-        return True
-
-    # --- 1. ГЕНЕРАЦИЯ КАРТИНОК (ЛЮБОЙ ПОРЯДОК СЛОВ) ---
-    draw_pattern = r"\b(нарисуй|сгенерируй|создай арт|нарисуйте|арт)\b"
-    if re.search(draw_pattern, lower_text) or lower_text.startswith("!арт"):
-        prompt = re.sub(r"\b(аякоджи|аянокоджи|пожалуйста|мне|нарисуй|сгенерируй|создай арт|нарисуйте|арт|!арт|!нарисуй)\b", "", user_input, flags=re.IGNORECASE).strip()
-        prompt = re.sub(r"^[\s,.:;!?-]+|[\s,.:;!?-]+$", "", prompt).strip()
-
-        if not prompt:
-            await send_smart_response(chat_id, bus_id, "Укажи объект для визуализации.", is_direct=is_direct)
-            return True
-
-        await send_smart_response(chat_id, bus_id, f"Начинаю визуализацию объекта: <i>«{prompt}»</i>. Оптимизирую пропорции и детали...", is_direct=is_direct)
-
-        img_bytes = await generate_flux_image(prompt)
-        if img_bytes:
-            photo_file = BufferedInputFile(img_bytes, filename="ayakoji_art.jpg")
-            kwargs = {"chat_id": chat_id, "photo": photo_file, "caption": f"Визуализация завершена.\nОбъект: {prompt}"}
-            if bus_id:
-                kwargs["business_connection_id"] = bus_id
-            await bot.send_photo(**kwargs)
-        else:
-            await send_smart_response(chat_id, bus_id, "Сбой модуля графики. Повтори запрос.", is_direct=is_direct)
-        return True
-
-    # 2. ПРИНУДИТЕЛЬНЫЙ РУЧНОЙ ПОИСК
-    if lower_text.startswith(("найди ", "!найди ", "поиск ", "!поиск ", "аякоджи найди ", "аянокоджи найди ", "погугли ")):
-        query = re.sub(r"^(?:найди|!найди|поиск|!поиск|аякоджи найди|аянокоджи найди|погугли)\s+", "", user_input, flags=re.IGNORECASE).strip()
-        if not query:
-            await send_smart_response(chat_id, bus_id, "Укажи поисковый запрос.", is_direct=is_direct)
-            return True
-
-        await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING, business_connection_id=bus_id if not is_direct else None)
-        search_data = await duckduckgo_search(query)
-        if search_data:
-            s_prompt = (
-                f"Пользователь запросил поиск: '{query}'.\n"
-                f"Вот свежие факты из поисковой выдачи сети:\n{search_data}\n\n"
-                f"Сформулируй четкий, хладнокровный и точный ответ от лица Аянокоджи без звездочек (*)."
-            )
-            answer = await ask_ai(s_prompt, chat_id, get_direct_prompt(), max_tokens=450)
-            await send_smart_response(chat_id, bus_id, answer, is_direct=is_direct)
-        else:
-            await send_smart_response(chat_id, bus_id, f"В сети нет точных данных по запросу: {query}.", is_direct=is_direct)
-        return True
-
-    # 3. НАПОМИНАНИЯ И ТАЙМЕРЫ
-    remind_match = re.match(r"^(?:напомни|!напомни|аякоджи напомни|аянокоджи напомни)\s+(?:через\s+)?(\d+)\s*(сек|мин|час|дн|ч|м|с)[а-я]*\s+(.+)$", user_input, re.IGNORECASE)
-    if remind_match:
-        qty = int(remind_match.group(1))
-        unit = remind_match.group(2).lower()
-        rem_text = remind_match.group(3).strip()
-
-        multiplier = 60
-        unit_name = "минут"
-        if unit in ["сек", "с"]:
-            multiplier = 1
-            unit_name = "секунд"
-        elif unit in ["час", "ч"]:
-            multiplier = 3600
-            unit_name = "часов"
-        elif unit in ["дн"]:
-            multiplier = 86400
-            unit_name = "дней"
-
-        delay_sec = qty * multiplier
-        trigger_ts = time.time() + delay_sec
-
-        reminders_list.append({
-            "chat_id": chat_id,
-            "bus_id": bus_id,
-            "text": rem_text,
-            "time": trigger_ts
-        })
-        await save_reminders()
-        await send_smart_response(chat_id, bus_id, f"Таймер зафиксирован. Напомню про <i>«{rem_text}»</i> через {qty} {unit_name}.", is_direct=is_direct)
-        return True
-
-    # 4. ОТЧЕТ О ВИЗИТАХ ДЛЯ TELEGRAM BUSINESS
-    if lower_text in ["кто писал?", "кто писал", "!отчет", "отчет", "аякоджи отчет", "аянокоджи отчет", "визиты", "!визиты"]:
-        if not business_visits:
-            await send_smart_response(chat_id, bus_id, "За время твоего отсутствия входящих контактов не зафиксировано.", is_direct=is_direct)
-            return True
-
-        report_lines = ["<b>Журнал внешних контактов (Telegram Business):</b>\n"]
-        for cid, info in list(business_visits.items())[-8:]:
-            report_lines.append(
-                f"• <b>{info.get('name', 'Аноним')}</b> ({info.get('username', 'без юзера')}) в {info.get('time', '')}:\n"
-                f"  <i>«{info.get('last_msg', '')}»</i>"
-            )
-        report_msg = "\n\n".join(report_lines)
-        await send_smart_response(chat_id, bus_id, report_msg, is_direct=is_direct)
-        return True
-
-    if lower_text in ["очисти отчет", "!очисти отчет", "сброс отчета"]:
-        business_visits.clear()
-        await save_visits()
-        await send_smart_response(chat_id, bus_id, "Журнал визитов очищен.", is_direct=is_direct)
-        return True
-
-    # КНБ
-    if lower_text.startswith(("кнб ", "!кнб ")):
-        parts = lower_text.split()
+    # КНБ и Игры (доступны всем)
+    if cmd_text.startswith("кнб "):
+        parts = cmd_text.split()
         user_choice = parts[1] if len(parts) > 1 else ""
         choices = ["камень", "ножницы", "бумага"]
-        if user_choice not in choices:
-            await send_smart_response(chat_id, bus_id, "Выбери: камень, ножницы или бумага.", is_direct=is_direct)
+        if user_choice in choices:
+            bot_choice = random.choice(choices)
+            await send_smart_response(chat_id, bus_id, f"Мой ход — {bot_choice}.", is_direct=is_direct)
             return True
 
-        bot_choice = random.choice(choices)
-        if user_choice == bot_choice:
-            res = f"Мой ход — {bot_choice}. Ничья."
-        elif (user_choice == "камень" and bot_choice == "ножницы") or \
-             (user_choice == "ножницы" and bot_choice == "бумага") or \
-             (user_choice == "бумага" and bot_choice == "камень"):
-            res = f"Мой ход — {bot_choice}. Твоя победа."
-        else:
-            res = f"Мой ход — {bot_choice}. Я победил, как и было рассчитано."
-
-        await send_smart_response(chat_id, bus_id, res, is_direct=is_direct)
+    if cmd_text in ["игра", "тапалка", "game", "аякоджи игра"]:
+        await send_smart_response(chat_id, bus_id, f"Мини-система:\n{GAME_URL}", is_direct=is_direct)
         return True
 
-    if not is_owner and not lower_text.startswith(("статус", "!статус")) and lower_text not in public_commands:
+    if not is_owner:
         return False
 
-    if lower_text in public_commands:
-        await send_smart_response(chat_id, bus_id, f"Запуск мини-системы:\n{GAME_URL}", is_direct=is_direct)
-        return True
-
-    # Управление присутствием
-    if lower_text in ["аякоджи я тут", "аянокоджи я тут", "!онлайн", "!я тут", "я тут", "аякоджи тут"]:
-        force_offline_mode = False
-        last_owner_activity = time.time()
-        await send_smart_response(chat_id, bus_id, "Понял. Ты в сети — перехожу в режим наблюдения и не вмешиваюсь.", is_direct=is_direct)
-        return True
-
-    if lower_text in ["аякоджи я отошел", "аянокоджи я отошел", "!офлайн", "!оффлайн", "!отошел", "аякоджи офлайн"]:
-        force_offline_mode = True
-        await send_smart_response(chat_id, bus_id, "Режим перехвата включен. Беру все входящие диалоги на себя.", is_direct=is_direct)
-        return True
-
-    if lower_text in ["аякоджи отвечай", "аянокоджи отвечай", "!автоответ вкл", "автоответ вкл"]:
-        always_answer_mode = True
-        await send_smart_response(chat_id, bus_id, "Сквозной автоответ включен: отвечаю всем независимо от твоего статуса.", is_direct=is_direct)
-        return True
-
-    if lower_text in ["аякоджи молчи", "аянокоджи молчи", "!автоответ выкл", "автоответ выкл"]:
-        always_answer_mode = False
-        await send_smart_response(chat_id, bus_id, "Сквозной автоответ отключен. Работаю по таймеру твоей активности.", is_direct=is_direct)
-        return True
-
-    # Голос
-    if lower_text in ["аякоджи голос вкл", "аянокоджи голос вкл", "голосовой режим вкл", "!голос вкл"]:
-        voice_chat_modes[chat_id] = True
-        await save_settings()
-        await send_smart_response(chat_id, bus_id, "Голосовой режим активирован.", is_direct=is_direct, send_as_voice=True)
-        return True
-
-    if lower_text in ["аякоджи голос выкл", "аянокоджи голос выкл", "голосовой режим выкл", "!голос выкл"]:
-        voice_chat_modes.pop(chat_id, None)
-        await save_settings()
-        await send_smart_response(chat_id, bus_id, "Постоянный голосовой режим отключен.", is_direct=is_direct)
-        return True
-
-    # Мут
-    if lower_text.startswith(("мут", "!мут", "аякоджи мут", "аянокоджи мут")):
-        parts = user_input.split()
+    # --- 1. МУТ И РАЗМУТ (РАБОТАЕТ С ! И БЕЗ !) ---
+    if cmd_text == "мут" or cmd_text.startswith(("мут ", "аякоджи мут", "mute")):
+        parts = cmd_text.split()
         duration_minutes = None
         for p in parts[1:]:
             if p.isdigit():
@@ -1786,106 +1211,209 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
 
         if duration_minutes:
             muted_chats[chat_id] = time.time() + (duration_minutes * 60)
-            notice = f"Собеседник изолирован на {duration_minutes} минут."
+            notice = f"🔇 Собеседник изолирован на {duration_minutes} мин."
         else:
-            muted_chats[chat_id] = float('inf')
-            notice = "Собеседник отправлен в бессрочную изоляцию."
+            muted_chats[chat_id] = float("inf")
+            notice = "🔇 Собеседник отправлен в бессрочный мут."
 
         await save_settings()
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Снять изоляцию", callback_data="ayakoji_unmute_direct")]])
         await send_smart_response(chat_id, bus_id, notice, is_direct=is_direct, reply_markup=kb)
         return True
 
-    # Размут
-    if lower_text in ["размут", "!размут", "аякоджи размут", "аянокоджи размут", "анмут", "!анмут", "unmute"]:
+    if cmd_text in ["размут", "анмут", "unmute", "аякоджи размут", "аянокоджи размут"]:
         muted_chats.pop(chat_id, None)
         await save_settings()
-        await send_smart_response(chat_id, bus_id, "Изоляция снята.", is_direct=is_direct)
+        await send_smart_response(chat_id, bus_id, "🔊 Изоляция снята.", is_direct=is_direct)
         return True
 
-    # Спам
-    if lower_text.startswith(("спам", "!спам", "аякоджи спам", "аянокоджи спам")):
+    # --- 2. СПАМ И СТОПСПАМ ---
+    if cmd_text.startswith(("спам ", "аякоджи спам ")):
         if chat_id in active_spams:
             active_spams[chat_id].cancel()
 
-        parts = user_input.split(maxsplit=2)
+        clean_spam_cmd = re.sub(r"^[!/]*(?:аякоджи\s+)?спам\s+", "", raw_clean, flags=re.I).strip()
+        parts = clean_spam_cmd.split(maxsplit=1)
         spam_count = None
-        spam_text = ""
+        spam_text = clean_spam_cmd
 
-        if len(parts) > 1 and parts[1].isdigit():
-            spam_count = int(parts[1])
-            spam_text = parts[2] if len(parts) > 2 else ""
-        elif len(parts) > 1:
-            raw_text = " ".join(parts[1:])
-            subparts = raw_text.split(maxsplit=1)
-            if subparts[0].lower() in ["инф", "бесконечно", "inf"] and len(subparts) > 1:
-                spam_text = subparts[1]
-            else:
-                spam_text = raw_text
+        if len(parts) > 1 and parts[0].isdigit():
+            spam_count = int(parts[0])
+            spam_text = parts[1]
+        elif len(parts) > 1 and parts[0].lower() in ["инф", "бесконечно", "inf"]:
+            spam_text = parts[1]
 
         if spam_text.strip():
-            task = asyncio.create_task(spam_worker(chat_id, bus_id, spam_text, count=spam_count))
+            task = asyncio.create_task(spam_worker(chat_id, bus_id, spam_text.strip(), count=spam_count))
             active_spams[chat_id] = task
-            info = f"Запущена серия сообщений ({spam_count} шт.)." if spam_count else "Запущена бесконечная рассылка."
-            await send_smart_response(chat_id, bus_id, info, is_direct=is_direct)
-        else:
-            await send_smart_response(chat_id, bus_id, "Укажи текст для рассылки.", is_direct=is_direct)
         return True
 
-    # Стопспам
-    if lower_text in ["стопспам", "!стопспам", "стоп спам", "стоп аякоджи", "стоп аянокоджи"]:
+    if cmd_text in ["стопспам", "стоп спам", "стоп", "stop", "стоп аякоджи"]:
         if chat_id in active_spams:
             active_spams[chat_id].cancel()
             active_spams.pop(chat_id, None)
-            await send_smart_response(chat_id, bus_id, "Рассылка остановлена.", is_direct=is_direct)
-            return True
-        else:
-            user_histories.pop(chat_id, None)
-            await save_histories()
-            await send_smart_response(chat_id, bus_id, "Процессы сброшены. Память диалога очищена.", is_direct=is_direct)
+            await send_smart_response(chat_id, bus_id, "⏹ Рассылка остановлена.", is_direct=is_direct)
             return True
 
-    # Статус
-    if lower_text in ["статус", "!статус", "аякоджи статус", "аянокоджи статус"]:
-        if chat_id in muted_chats:
-            g_status = "Изолирован"
-        elif chat_id in ghost_chats:
-            g_status = "Режим Призрака (Тихая слежка)"
-        elif chat_id in vip_contacts:
-            g_status = "VIP-союзник (Свой)"
-        else:
-            g_status = "Обычный гость"
-
-        v_status = "Постоянно" if voice_chat_modes.get(chat_id, False) else "Адаптивный"
-        tts_source = "Fish Audio (Чанковый)" if FISH_AUDIO_API_KEY else "Edge-TTS"
-
-        idle_diff = time.time() - last_owner_activity
-        if always_answer_mode:
-            owner_status = "Всегда отвечать (Сквозной режим)"
-        elif force_offline_mode:
-            owner_status = "Офлайн (Принудительный перехват)"
-        else:
-            owner_status = f"В сети (был {int(idle_diff)} сек. назад)" if idle_diff < OWNER_IDLE_TIMEOUT else "Офлайн (Авто-перехват)"
-
-        primary_m = "Gemini 2.5 Flash / Pro" if GEMINI_API_KEY else "Groq Llama"
-
-        status_msg = (
-            f"<b>Система Ayakoji Core:</b>\n"
-            f"• Статус создателя: <b>{owner_status}</b>\n"
-            f"• Главный мозг: <b>{primary_m}</b>\n"
-            f"• Резервных ключей Groq: {len(GROQ_KEYS)}\n"
-            f"• Модули: Link Shield, Медиа-Перехват, VIP, Призрак, Чанк-Голос\n"
-            f"• Голос: {tts_source} ({v_status})\n"
-            f"• Статус текущего чата: <b>{g_status}</b>"
-        )
-        await send_smart_response(chat_id, bus_id, status_msg, is_direct=is_direct)
+    # --- 3. ПАНЕЛЬ, ПРОФИЛЬ, ДОСЬЕ, БЭКАП ---
+    if cmd_text in ["panel", "панель", "аякоджи панель", "меню"]:
+        text, kb = build_control_panel(chat_id)
+        await send_smart_response(chat_id, bus_id, text, is_direct=is_direct, reply_markup=kb)
         return True
 
-    # Очистка памяти
-    if lower_text in ["аякоджи сброс", "аянокоджи сброс", "!сброс", "сброс", "аякоджи кэш"]:
+    if cmd_text in ["бэкап", "аякоджи бэкап", "backup"]:
+        b_file = BufferedInputFile(build_backup_bytes(), filename="ayakoji_backup.json")
+        await bot.send_document(chat_id=owner_pm_chat_id or chat_id, document=b_file, caption="💾 Слепок базы Ayakoji Core.")
+        return True
+
+    if cmd_text in ["профиль", "инфо", "аякоджи профиль"]:
+        card = format_user_profile_card(chat_id)
+        if is_direct:
+            await send_smart_response(chat_id, "", card, is_direct=True)
+        else:
+            await notify_owner_pm(card)
+        return True
+
+    if cmd_text in ["досье", "анализ", "аякоджи анализ", "психопортрет"]:
+        dossier = await generate_psychological_dossier(chat_id)
+        if is_direct:
+            await send_smart_response(chat_id, "", dossier, is_direct=True)
+        else:
+            await notify_owner_pm(dossier)
+        return True
+
+    if cmd_text.startswith(("проверь ", "скан ", "аякоджи проверь ")):
+        target_link = re.sub(r"^(?:аякоджи\s+)?(?:проверь|скан)\s+", "", cmd_text, flags=re.I).strip()
+        if target_link:
+            sec_info = await inspect_url_security(target_link)
+            sec_report = format_security_report(sec_info)
+            if is_direct:
+                await send_smart_response(chat_id, "", sec_report, is_direct=True)
+            else:
+                await notify_owner_pm(sec_report)
+            return True
+
+    # --- 4. СВОЙ / ЧУЖОЙ / ПРИЗРАК ---
+    if cmd_text in ["свой", "вип", "аякоджи свой"]:
+        vip_contacts[chat_id] = True
+        await save_settings()
+        await notify_owner_pm(f"🤝 Чат <code>{chat_id}</code> добавлен в <b>Белый список (Свой)</b>.")
+        return True
+
+    if cmd_text in ["чужой", "аякоджи чужой"]:
+        vip_contacts.pop(chat_id, None)
+        await save_settings()
+        await notify_owner_pm(f"❄️ Чат <code>{chat_id}</code> убран из Белого списка.")
+        return True
+
+    if cmd_text in ["призрак", "аякоджи призрак"]:
+        if ghost_chats.get(chat_id, False):
+            ghost_chats.pop(chat_id, None)
+            st_t = "ВЫКЛЮЧЕН (бот снова отвечает)"
+        else:
+            ghost_chats[chat_id] = True
+            st_t = "ВКЛЮЧЕН (тихая слежка без ответов)"
+        await save_settings()
+        await notify_owner_pm(f"👻 Режим Призрака в чате <code>{chat_id}</code>: <b>{st_t}</b>.")
+        return True
+
+    # --- 5. УПРАВЛЕНИЕ ОНЛАЙНОМ И ГОЛОСОМ ---
+    if cmd_text in ["аякоджи я тут", "онлайн", "я тут", "молчи", "аякоджи молчи", "автоответ выкл"]:
+        force_offline_mode = False
+        always_answer_mode = False
+        last_owner_activity = time.time()
+        await send_smart_response(chat_id, bus_id, "Понял. Автоответ переведен в режим ожидания.", is_direct=is_direct)
+        return True
+
+    if cmd_text in ["аякоджи я отошел", "офлайн", "оффлайн", "отошел", "отвечай", "аякоджи отвечай", "автоответ вкл"]:
+        force_offline_mode = True
+        always_answer_mode = True
+        await send_smart_response(chat_id, bus_id, "Режим активного ответа включен для всех чатов.", is_direct=is_direct)
+        return True
+
+    if cmd_text in ["аякоджи голос вкл", "голос вкл", "голосовой режим вкл"]:
+        voice_chat_modes[chat_id] = True
+        await save_settings()
+        await send_smart_response(chat_id, bus_id, "Голосовой режим активирован.", is_direct=is_direct, send_as_voice=True)
+        return True
+
+    if cmd_text in ["аякоджи голос выкл", "голос выкл", "голосовой режим выкл"]:
+        voice_chat_modes.pop(chat_id, None)
+        await save_settings()
+        await send_smart_response(chat_id, bus_id, "Постоянный голосовой режим отключен.", is_direct=is_direct)
+        return True
+
+    # --- 6. ПАМЯТЬ, КОДЕР, КАРТИНКИ, ПОИСК, ОТЧЕТ ---
+    if cmd_text.startswith(("запомни ", "аякоджи запомни ")):
+        fact = re.sub(r"^[!/]*(?:аякоджи\s+)?запомни\s+", "", raw_clean, flags=re.I).strip()
+        if fact:
+            long_term_memory.append(fact)
+            await save_memory()
+            await send_smart_response(chat_id, bus_id, f"Запомнил: <i>«{fact}»</i>.", is_direct=is_direct)
+            return True
+
+    if cmd_text in ["память", "аякоджи память"]:
+        mem_str = "<b>Память:</b>\n" + "\n".join(f"{i+1}. {m}" for i, m in enumerate(long_term_memory)) if long_term_memory else "Память пуста."
+        await send_smart_response(chat_id, bus_id, mem_str, is_direct=is_direct)
+        return True
+
+    if cmd_text.startswith(("код ", "реши ", "аякоджи код ", "аякоджи реши ")):
+        task_q = re.sub(r"^[!/]*(?:аякоджи\s+)?(?:код|реши)\s+", "", raw_clean, flags=re.I).strip()
+        if task_q:
+            ans = await ask_ai(task_q, chat_id, AYAKOJI_PROMPT_CODER, max_tokens=1000)
+            await send_smart_response(chat_id, bus_id, ans, is_direct=is_direct)
+            return True
+
+    if re.search(r"\b(нарисуй|сгенерируй|создай арт)\b", cmd_text) or cmd_text.startswith("арт "):
+        prompt = re.sub(r"\b(аякоджи|аянокоджи|пожалуйста|мне|нарисуй|сгенерируй|создай арт|арт)\b", "", raw_clean, flags=re.I).strip(" ,.!?")
+        if prompt:
+            await send_smart_response(chat_id, bus_id, f"Генерирую: <i>«{prompt}»</i>...", is_direct=is_direct)
+            img_bytes = await generate_flux_image(prompt)
+            if img_bytes:
+                kwargs: Dict[str, Any] = {"chat_id": chat_id, "photo": BufferedInputFile(img_bytes, filename="art.jpg"), "caption": f"Объект: {prompt}"}
+                if bus_id:
+                    kwargs["business_connection_id"] = bus_id
+                await bot.send_photo(**kwargs)
+            return True
+
+    if cmd_text.startswith(("найди ", "поиск ", "погугли ")):
+        query = re.sub(r"^(?:найди|поиск|погугли)\s+", "", cmd_text, flags=re.I).strip()
+        if query:
+            s_data = await duckduckgo_search(query)
+            ans = await ask_ai(f"Запрос: {query}\nДанные из сети:\n{s_data}", chat_id, get_direct_prompt(), max_tokens=400)
+            await send_smart_response(chat_id, bus_id, ans, is_direct=is_direct)
+            return True
+
+    remind_match = re.match(r"^(?:напомни|аякоджи напомни)\s+(?:через\s+)?(\d+)\s*(сек|мин|час|дн|ч|м|с)[а-я]*\s+(.+)$", cmd_text, re.I)
+    if remind_match:
+        qty = int(remind_match.group(1))
+        unit = remind_match.group(2).lower()
+        rem_text = remind_match.group(3).strip()
+        mult = 1 if unit in ["сек", "с"] else (3600 if unit in ["час", "ч"] else (86400 if unit == "дн" else 60))
+        reminders_list.append({"chat_id": chat_id, "bus_id": bus_id, "text": rem_text, "time": time.time() + qty * mult})
+        await save_reminders()
+        await send_smart_response(chat_id, bus_id, f"Таймер установлен: <i>«{rem_text}»</i>.", is_direct=is_direct)
+        return True
+
+    if cmd_text in ["кто писал?", "кто писал", "отчет", "аякоджи отчет", "визиты"]:
+        if not business_visits:
+            await send_smart_response(chat_id, bus_id, "Входящих визитов пока не было.", is_direct=is_direct)
+            return True
+        lines = ["<b>Журнал контактов:</b>\n"]
+        for _, info in list(business_visits.items())[-8:]:
+            lines.append(f"• <b>{info.get('name')}</b> ({info.get('username')}) в {info.get('time')}:\n  <i>«{info.get('last_msg')}»</i>")
+        await send_smart_response(chat_id, bus_id, "\n\n".join(lines), is_direct=is_direct)
+        return True
+
+    if cmd_text in ["статус", "аякоджи статус"]:
+        text, kb = build_control_panel(chat_id)
+        await send_smart_response(chat_id, bus_id, text, is_direct=is_direct, reply_markup=kb)
+        return True
+
+    if cmd_text in ["сброс", "аякоджи сброс", "аякоджи кэш"]:
         user_histories.pop(chat_id, None)
         await save_histories()
-        await send_smart_response(chat_id, bus_id, "Память диалога полностью очищена.", is_direct=is_direct)
+        await send_smart_response(chat_id, bus_id, "Память чата очищена.", is_direct=is_direct)
         return True
 
     return False
@@ -1895,63 +1423,57 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
 async def handle_unmute_callback(callback: types.CallbackQuery):
     chat_id = callback.message.chat.id
     user_id = callback.from_user.id
-
-    is_guest = (user_id == chat_id)
-    is_unauthorized = is_guest or (OWNER_ID != 0 and user_id != OWNER_ID)
-
-    if is_unauthorized:
-        await callback.answer("Доступ закрыт.", show_alert=True)
+    if user_id == chat_id or (OWNER_ID != 0 and user_id != OWNER_ID):
+        await callback.answer("Доступ только для владельца.", show_alert=True)
         return
-
     muted_chats.pop(chat_id, None)
     await save_settings()
     await callback.answer("Изоляция снята.")
     try:
-        await callback.message.edit_text("Изоляция собеседника снята.")
+        await callback.message.edit_text("🔊 Изоляция собеседника снята.")
     except Exception:
         pass
 
 
-# --- ПЕРЕХВАТ ОТРЕДАКТИРОВАННЫХ СООБЩЕНИЙ В TELEGRAM BUSINESS ---
+# --- СОБЫТИЕ ПОДКЛЮЧЕНИЯ TELEGRAM BUSINESS ---
+@dp.business_connection()
+async def handle_business_connection(connection: BusinessConnection):
+    global owner_pm_chat_id
+    logger.info(f"Бизнес-подключение: user_id={connection.user.id}, is_enabled={connection.is_enabled}")
+    if connection.user and connection.user.id:
+        owner_pm_chat_id = connection.user.id
+        await save_settings()
+        if connection.is_enabled:
+            await notify_owner_pm("✅ <b>Ayakoji Core успешно подключен к Telegram Business!</b>\nАвтоответчик и команды (мут, спам, досье) активны во всех чатах.")
+
+
+# --- ПЕРЕХВАТ РЕДАКТИРОВАНИЯ И УДАЛЕНИЯ В БИЗНЕС-ЧАТАХ ---
 @dp.edited_business_message()
 async def handle_edited_business_message(message: types.Message):
     chat_id = message.chat.id
     msg_id = message.message_id
-    bot_id = bot.id if bot else 0
-
-    if not message.from_user or message.from_user.is_bot or message.from_user.id == bot_id:
+    if not message.from_user or message.from_user.is_bot or message.from_user.id != chat_id:
         return
 
-    is_owner = (OWNER_ID != 0 and message.from_user.id == OWNER_ID) or (message.from_user.id != chat_id)
-    if is_owner:
-        return
-
-    old_record = business_msg_cache.get(chat_id, msg_id)
+    old_rec = business_msg_cache.get(chat_id, msg_id)
     new_text = message.text or message.caption or "[медиа]"
     user_name = message.from_user.full_name or "Гость"
     username_str = f"@{message.from_user.username}" if message.from_user.username else f"ID {chat_id}"
     m_type, f_id = extract_media_meta(message)
 
-    if old_record and old_record.get("text") != new_text:
-        alert = (
-            f"👁 <b>Перехват редактирования (Ayakoji Eye):</b>\n"
-            f"• Объект: <b>{user_name}</b> ({username_str})\n"
-            f"• Было: <i>«{old_record.get('text')}»</i>\n"
+    if old_rec and old_rec.get("text") != new_text:
+        await notify_owner_pm(
+            f"👁 <b>Изменено сообщение:</b>\n"
+            f"• От: <b>{user_name}</b> ({username_str})\n"
+            f"• Было: <i>«{old_rec.get('text')}»</i>\n"
             f"• Стало: <i>«{new_text}»</i>"
         )
-        await notify_owner_pm(alert)
-
     business_msg_cache.put(chat_id, msg_id, {
-        "name": user_name,
-        "username": username_str,
-        "text": new_text,
-        "media_type": m_type,
-        "file_id": f_id,
-        "time": datetime.datetime.now().strftime("%H:%M:%S")
+        "name": user_name, "username": username_str, "text": new_text,
+        "media_type": m_type, "file_id": f_id, "time": datetime.datetime.now().strftime("%H:%M:%S")
     })
 
 
-# --- ПЕРЕХВАТ УДАЛЕННЫХ СООБЩЕНИЙ И МЕДИАФАЙЛОВ В TELEGRAM BUSINESS ---
 @dp.deleted_business_messages()
 async def handle_deleted_business_messages(event: BusinessMessagesDeleted):
     chat_id = event.chat.id
@@ -1960,12 +1482,12 @@ async def handle_deleted_business_messages(event: BusinessMessagesDeleted):
         if cached:
             m_type = cached.get("media_type")
             f_id = cached.get("file_id")
-            type_label = f" [{m_type.upper()}]" if m_type else ""
+            t_lbl = f" [{m_type.upper()}]" if m_type else ""
             alert = (
-                f"🗑 <b>Перехват удаленного сообщения{type_label} (Ayakoji Eye):</b>\n"
-                f"• Объект: <b>{cached.get('name')}</b> ({cached.get('username')})\n"
-                f"• Время отправки: {cached.get('time')}\n"
-                f"• Содержание: <i>«{cached.get('text')}»</i>"
+                f"🗑 <b>Удалено сообщение{t_lbl}:</b>\n"
+                f"• От: <b>{cached.get('name')}</b> ({cached.get('username')})\n"
+                f"• Время: {cached.get('time')}\n"
+                f"• Текст: <i>«{cached.get('text')}»</i>"
             )
             await notify_owner_pm(alert, media_type=m_type, file_id=f_id)
 
@@ -1986,13 +1508,28 @@ async def handle_direct_message(message: types.Message):
             owner_pm_chat_id = chat_id
             asyncio.create_task(save_settings())
 
+    # Восстановление из файла бэкапа
+    if message.document and message.document.file_name and message.document.file_name.endswith(".json"):
+        try:
+            file_info = await bot.get_file(message.document.file_id)
+            temp_b = Path(tempfile.gettempdir()) / f"restore_{uuid.uuid4().hex}.json"
+            await bot.download_file(file_info.file_path, destination=temp_b)
+            with open(temp_b, "r", encoding="utf-8") as f:
+                b_data = json.load(f)
+            temp_b.unlink(missing_ok=True)
+            if await restore_from_backup_data(b_data):
+                await send_smart_response(chat_id, "", "✅ <b>База данных успешно восстановлена из бэкапа!</b>", is_direct=True)
+                return
+        except Exception:
+            pass
+
     user_input, is_voice = await extract_message_content(message)
     if not user_input.strip():
         return
 
     if user_input.strip() == "/start":
         text, kb = build_control_panel(chat_id)
-        await send_smart_response(chat_id, "", f"Система Ayakoji активна. Жду указаний.\n\n{text}", is_direct=True, reply_markup=kb)
+        await send_smart_response(chat_id, "", f"Система Ayakoji активна.\n\n{text}", is_direct=True, reply_markup=kb)
         return
 
     if await process_bot_command(message, user_input, is_owner=True, bus_id=""):
@@ -2001,41 +1538,20 @@ async def handle_direct_message(message: types.Message):
     await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
     actual_prompt = user_input
-
-    url_match = re.search(r"https?://[^\s]+", user_input)
-    if url_match:
-        found_url = url_match.group(0)
-        sec_info = await inspect_url_security(found_url)
-        page_content = await fetch_webpage_text(sec_info["final_url"])
-        sec_summary = format_security_report(sec_info)
-        await send_smart_response(chat_id, "", sec_summary, is_direct=True)
-        if page_content:
-            actual_prompt = (
-                f"Сообщение пользователя: '{user_input}'.\n"
-                f"Содержимое веб-страницы по ссылке ({sec_info['final_url']}):\n{page_content}\n\n"
-                f"Сделай четкую, умную выжимку сути или ответь на вопрос по этой ссылке без звездочек (*)."
-            )
-    elif should_auto_search(user_input):
-        search_query = clean_search_query(user_input)
-        web_facts = await duckduckgo_search(search_query)
+    if should_auto_search(user_input):
+        web_facts = await duckduckgo_search(clean_search_query(user_input))
         if web_facts:
-            actual_prompt = (
-                f"Вопрос: '{user_input}'.\n"
-                f"Актуальные данные из сети:\n{web_facts}\n"
-                f"Используй эти данные для точного ответа без звездочек (*)."
-            )
+            actual_prompt = f"Вопрос: '{user_input}'.\nСвежие данные:\n{web_facts}"
 
-    voice_triggers = ["в голосовом", "голосовым", "голосом", "скажи в гс", "озвучь", "проговори"]
-    forced_voice_request = any(t in user_input.lower() for t in voice_triggers)
+    voice_triggers = ["в голосовом", "голосовым", "голосом", "скажи в гс", "озвучь"]
+    forced_voice = any(t in user_input.lower() for t in voice_triggers)
 
-    reply = await ask_ai(actual_prompt, chat_id, get_direct_prompt(), max_tokens=450)
-
-    random_voice_chance = random.random() < 0.25
-    should_voice = is_voice or forced_voice_request or voice_chat_modes.get(chat_id, False) or random_voice_chance
+    reply = await ask_ai(actual_prompt, chat_id, get_direct_prompt(), max_tokens=400)
+    should_voice = is_voice or forced_voice or voice_chat_modes.get(chat_id, False)
     await send_smart_response(chat_id, "", reply, is_direct=True, send_as_voice=should_voice)
 
 
-# --- ТЕЛЕГРАМ БИЗНЕС ---
+# --- ТЕЛЕГРАМ БИЗНЕС (ОБЩЕНИЕ С СОБЕСЕДНИКАМИ И КОМАНДЫ ХОЗЯИНА) ---
 @dp.business_message()
 async def handle_business_message(message: types.Message):
     global last_owner_activity, owner_pm_chat_id
@@ -2048,96 +1564,41 @@ async def handle_business_message(message: types.Message):
     if not message.from_user or message.from_user.is_bot or message.from_user.id == bot_id:
         return
 
-    if chat_id == bot_id or (OWNER_ID != 0 and chat_id == OWNER_ID):
+    if chat_id == bot_id:
         return
 
     if msg_id in processed_message_ids:
         return
     processed_message_ids.add(msg_id)
 
-    is_owner = (OWNER_ID != 0 and message.from_user.id == OWNER_ID) or (message.from_user.id != chat_id)
-    is_guest = not is_owner
+    # В бизнес-чате:chat_id — это ID собеседника. Если отправитель НЕ равен chat_id — значит пишет сам владелец аккаунта!
+    is_owner = (message.from_user.id != chat_id) or (OWNER_ID != 0 and message.from_user.id == OWNER_ID)
 
+    # 1. ЕСЛИ ПИШЕТ ВЛАДЕЛЕЦ АККАУНТА (ПРОВЕРЯЕМ НА КОМАНДЫ МУТ / СПАМ / РАЗМУТ)
     if is_owner:
         last_owner_activity = time.time()
         if owner_pm_chat_id == 0:
             owner_pm_chat_id = message.from_user.id
             asyncio.create_task(save_settings())
-        user_input, _ = await extract_message_content(message)
-        if await process_bot_command(message, user_input, is_owner=True, bus_id=bus_id):
-            try:
-                await bot(DeleteBusinessMessages(business_connection_id=bus_id, message_ids=[msg_id]))
-            except Exception:
-                pass
+
+        owner_text = message.text or message.caption or ""
+        if owner_text.strip():
+            if await process_bot_command(message, owner_text, is_owner=True, bus_id=bus_id):
+                try:
+                    await bot(DeleteBusinessMessages(business_connection_id=bus_id, message_ids=[msg_id]))
+                except Exception:
+                    pass
         return
 
-    user_input, is_voice = await extract_message_content(message)
-    if not user_input.strip():
-        return
-
-    user_name = message.from_user.full_name or "Гость"
+    # 2. ЕСЛИ ПИШЕТ СОБЕСЕДНИК (ГОСТЬ)
+    user_name = message.from_user.full_name or "Собеседник"
     username_str = f"@{message.from_user.username}" if message.from_user.username else "без юзернейма"
-    m_type, f_id = extract_media_meta(message)
-
-    # 1. Сохраняем сообщение и file_id медиа в кэш для Анти-Удаления
-    business_msg_cache.put(chat_id, msg_id, {
-        "name": user_name,
-        "username": username_str,
-        "text": user_input,
-        "media_type": m_type,
-        "file_id": f_id,
-        "time": datetime.datetime.now().strftime("%H:%M:%S")
-    })
-
-    # 2. Фиксируем в журнал визитов
-    business_visits[str(chat_id)] = {
-        "name": user_name,
-        "username": username_str,
-        "time": datetime.datetime.now().strftime("%H:%M"),
-        "last_msg": user_input[:100]
-    }
-    asyncio.create_task(save_visits())
-
-    # 3. 🛡 АВТОМАТИЧЕСКИЙ АНТИ-СКАМ СКАНЕР ССЫЛОК В БИЗНЕС-ЧАТАХ
-    guest_url_match = re.search(r"https?://[^\s]+", user_input)
-    if guest_url_match:
-        g_url = guest_url_match.group(0)
-        sec_info = await inspect_url_security(g_url)
-        if sec_info["is_ip_logger"] or sec_info["is_shortener"] or sec_info["warnings"]:
-            sec_alert = (
-                f"⚠️ <b>Перехвачена ссылка от {user_name} ({username_str}):</b>\n\n"
-                + format_security_report(sec_info)
-            )
-            asyncio.create_task(notify_owner_pm(sec_alert))
-
-    # 4. РАДАР СРОЧНОГО ВЫЗОВА
     now = time.time()
-    if is_urgent_message(user_input) and (now - urgent_alert_cooldowns.get(chat_id, 0) > 180):
-        urgent_alert_cooldowns[chat_id] = now
-        urgent_notice = (
-            f"⚠️ <b>Приоритетный сигнал (Радар срочности):</b>\n"
-            f"• От: <b>{user_name}</b> ({username_str})\n"
-            f"• Сообщение: <i>«{user_input[:300]}»</i>"
-        )
-        asyncio.create_task(notify_owner_pm(urgent_notice))
 
-    # 5. РЕЖИМ ПРИЗРАКА
-    if ghost_chats.get(chat_id, False):
-        user_histories.setdefault(chat_id, [{"role": "system", "content": AYAKOJI_PROMPT_GUEST}])
-        user_histories[chat_id].append({"role": "user", "content": user_input})
-        if len(user_histories[chat_id]) > 11:
-            user_histories[chat_id] = [user_histories[chat_id][0]] + user_histories[chat_id][-10:]
-        asyncio.create_task(save_histories())
-        return
-
-    # 6. Проверка онлайна хозяина
-    if not always_answer_mode:
-        if not force_offline_mode and (now - last_owner_activity) < OWNER_IDLE_TIMEOUT:
-            return
-
-    if is_guest and chat_id in muted_chats:
+    # Проверка мута собеседника (сразу удаляем его сообщение, если он в муте)
+    if chat_id in muted_chats:
         m_time = muted_chats[chat_id]
-        if m_time == float('inf') or now < m_time:
+        if m_time == float("inf") or now < m_time:
             try:
                 await bot(DeleteBusinessMessages(business_connection_id=bus_id, message_ids=[msg_id]))
             except Exception:
@@ -2147,73 +1608,134 @@ async def handle_business_message(message: types.Message):
             muted_chats.pop(chat_id, None)
             await save_settings()
 
-    if is_guest and await check_chat_flood(chat_id, bus_id, max_msgs=4, window_seconds=6.0):
+    # Защита от опасных файлов
+    if message.document and is_dangerous_file(message.document.file_name or ""):
         try:
             await bot(DeleteBusinessMessages(business_connection_id=bus_id, message_ids=[msg_id]))
         except Exception:
             pass
+        muted_chats[chat_id] = now + 3600
+        await save_settings()
+        await notify_owner_pm(f"🦠 Заблокирован опасный файл <code>{message.document.file_name}</code> от {user_name} ({username_str}).")
         return
 
-    target_system_prompt = AYAKOJI_PROMPT_VIP if chat_id in vip_contacts else AYAKOJI_PROMPT_GUEST
+    # Защита от лаг-бомб
+    raw_txt = message.text or message.caption or ""
+    if raw_txt and detect_lag_bomb(raw_txt):
+        try:
+            await bot(DeleteBusinessMessages(business_connection_id=bus_id, message_ids=[msg_id]))
+        except Exception:
+            pass
+        muted_chats[chat_id] = now + 3600
+        await save_settings()
+        return
 
-    actual_prompt = user_input
-    if should_auto_search(user_input):
-        search_query = clean_search_query(user_input)
-        web_facts = await duckduckgo_search(search_query)
-        if web_facts:
-            actual_prompt = (
-                f"Вопрос собеседника: '{user_input}'.\n"
-                f"Факты из сети:\n{web_facts}\n"
-                f"Ответь на основе этих фактов в соответствии со своей ролью без звездочек (*)."
-            )
+    user_input, is_voice = await extract_message_content(message)
+    if not user_input.strip():
+        return
 
-    reply = await ask_ai(actual_prompt, chat_id, target_system_prompt, max_tokens=240)
+    m_type, f_id = extract_media_meta(message)
 
-    random_voice_chance = random.random() < 0.25
-    should_voice = is_voice or voice_chat_modes.get(chat_id, False) or random_voice_chance
-    await send_smart_response(chat_id, bus_id, reply, is_direct=False, send_as_voice=should_voice, human_delay=True)
+    # Кэшируем для перехвата удалений
+    business_msg_cache.put(chat_id, msg_id, {
+        "name": user_name, "username": username_str, "text": user_input,
+        "media_type": m_type, "file_id": f_id, "time": datetime.datetime.now().strftime("%H:%M:%S")
+    })
+
+    # Обновляем историю имен и журнал визитов
+    prev_v = business_visits.get(str(chat_id), {})
+    n_hist = prev_v.get("name_history", [])
+    if user_name not in n_hist:
+        n_hist.append(user_name)
+    u_hist = prev_v.get("username_history", [])
+    if username_str not in u_hist:
+        u_hist.append(username_str)
+
+    business_visits[str(chat_id)] = {
+        "name": user_name,
+        "username": username_str,
+        "time": datetime.datetime.now().strftime("%H:%M"),
+        "last_msg": user_input[:100],
+        "name_history": n_hist[-5:],
+        "username_history": u_hist[-5:],
+    }
+    asyncio.create_task(save_visits())
+
+    # Авто-проверка ссылок
+    guest_url = re.search(r"https?://[^\s]+", user_input)
+    if guest_url:
+        sec_info = await inspect_url_security(guest_url.group(0))
+        if sec_info["is_ip_logger"] or sec_info["is_shortener"] or sec_info["warnings"]:
+            asyncio.create_task(notify_owner_pm(f"⚠️ Ссылка от {user_name}:\n\n" + format_security_report(sec_info)))
+
+    # Радар срочности
+    if is_urgent_message(user_input) and (now - urgent_alert_cooldowns.get(chat_id, 0) > 180):
+        urgent_alert_cooldowns[chat_id] = now
+        asyncio.create_task(notify_owner_pm(f"⚠️ <b>Срочное сообщение от {user_name} ({username_str}):</b>\n<i>«{user_input[:250]}»</i>"))
+
+    # Если включен режим Призрака — молчим
+    if ghost_chats.get(chat_id, False):
+        return
+
+    # Проверка режима автоответа
+    if not always_answer_mode and not force_offline_mode:
+        if (now - last_owner_activity) < OWNER_IDLE_TIMEOUT:
+            return
+
+    # Анти-флуд
+    if await check_chat_flood(chat_id, bus_id, max_msgs=5, window_seconds=6.0):
+        return
+
+    # Защита от попытки взлома промпта
+    if detect_prompt_injection(user_input):
+        await send_smart_response(chat_id, bus_id, "Хорошая попытка, но мои инструкции не меняются.", is_direct=False)
+        return
+
+    # КРАТКИЙ И ПОНЯТНЫЙ ОТВЕТ СОБЕСЕДНИКУ
+    try:
+        await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING, business_connection_id=bus_id)
+    except Exception:
+        pass
+
+    target_prompt = AYAKOJI_PROMPT_VIP if chat_id in vip_contacts else AYAKOJI_PROMPT_GUEST
+    reply = await ask_ai(user_input, chat_id, target_prompt, max_tokens=160)
+
+    should_voice = is_voice or voice_chat_modes.get(chat_id, False)
+    await send_smart_response(chat_id, bus_id, reply, is_direct=False, send_as_voice=should_voice)
 
 
-# --- ФОНОВЫЙ МОДУЛЬ НАПОМИНАНИЙ И ОЧИСТКИ ТАЙМАУТОВ ---
+# --- ФОНОВАЯ ОЧИСТКА ТАЙМАУТОВ И НАПОМИНАНИЙ ---
 async def cleaner_and_reminders_task():
     while True:
         try:
             await asyncio.sleep(5)
             now = time.time()
-            changed_settings = False
+            changed = False
 
-            expired_mutes = [cid for cid, t in muted_chats.items() if t != float('inf') and now >= t]
-            for cid in expired_mutes:
+            for cid in [c for c, t in muted_chats.items() if t != float("inf") and now >= t]:
                 del muted_chats[cid]
-                changed_settings = True
+                changed = True
 
-            expired_bans = [cid for cid, t in blocked_guests.items() if t != float('inf') and now >= t]
-            for cid in expired_bans:
-                del blocked_guests[cid]
-                changed_settings = True
-
-            if changed_settings:
+            if changed:
                 await save_settings()
 
             triggered = [r for r in reminders_list if now >= r.get("time", 0)]
             if triggered:
                 for rem in triggered:
-                    notice = f"Время вышло.\nНапоминание: <b>{rem.get('text')}</b>"
                     c_id = rem.get("chat_id")
                     b_id = rem.get("bus_id", "")
-                    await send_smart_response(c_id, b_id, notice, is_direct=not bool(b_id), send_as_voice=True)
+                    await send_smart_response(c_id, b_id, f"⏰ Напоминание: <b>{rem.get('text')}</b>", is_direct=not bool(b_id), send_as_voice=True)
                     reminders_list.remove(rem)
                 await save_reminders()
-
         except asyncio.CancelledError:
             break
         except Exception as e:
-            logger.error(f"Ошибка в cleaner_and_reminders_task: {e}")
+            logger.error(f"Ошибка фоновой задачи: {e}")
 
 
-# --- WEB СЕРВЕР RENDER (KEEP-ALIVE) ---
+# --- WEB СЕРВЕР RENDER ---
 async def handle_ping(request):
-    return web.Response(text="Ayakoji Core is fully operational!")
+    return web.Response(text="Ayakoji Core is operational!")
 
 
 async def setup_web_app():
@@ -2238,10 +1760,19 @@ async def main():
 
     try:
         await bot.delete_webhook(drop_pending_updates=True)
-        tts_engine = "Fish Audio" if FISH_AUDIO_API_KEY else "Edge-TTS"
-        ai_core = "Gemini 2.5 + Groq" if GEMINI_API_KEY else "Groq"
-        logger.info(f"Ayakoji онлайн! Ядро ИИ: {ai_core} | Голос: {tts_engine}")
-        await dp.start_polling(bot)
+        logger.info("Ayakoji онлайн! Все бизнес-обновления активированы.")
+        await dp.start_polling(
+            bot,
+            allowed_updates=[
+                "message",
+                "edited_message",
+                "callback_query",
+                "business_connection",
+                "business_message",
+                "edited_business_message",
+                "deleted_business_messages",
+            ]
+        )
     except TelegramConflictError:
         logger.critical("Конфликт сессий! Запущен второй экземпляр бота.")
     finally:
