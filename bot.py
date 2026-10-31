@@ -37,82 +37,53 @@ from aiogram.types import (
 )
 from groq import APIError, AsyncGroq
 
-# --- ЛОГИРОВАНИЕ ---
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - [%(levelname)s] - %(name)s: %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(name)s: %(message)s")
 logger = logging.getLogger("AyakojiCore")
 
-# --- КОНФИГУРАЦИЯ И ЖЕЛЕЗНАЯ ПРИВЯЗКА К ВЛАДЕЛЬЦУ ---
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 GAME_URL = "https://kirito-fd.github.io/k1rit0/"
-
 OWNER_ID = int(os.getenv("OWNER_ID", "6911695017"))
 owner_pm_chat_id: int = OWNER_ID
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"]
-
-CHAT_OWNER_ACTIVE_PAUSE = 90  # Пауза 90 сек, когда ты сам переписываешься в чате
+CHAT_OWNER_ACTIVE_PAUSE = 90
 
 force_offline_mode = True
 always_answer_mode = False
 lockdown_mode = False
-bot_badges_enabled = True     # Кастомные эмодзи Аянокоджи в ответах бота
-auto_owner_badge = True       # Кастомные эмодзи Аянокоджи в конец твоих сообщений
+bot_badges_enabled = True
+auto_owner_badge = True
 owner_chat_activity: Dict[int, float] = {}
 
-# --- КАСТОМНЫЕ ЭМОДЗИ АЯНОКОДЖИ ПО ХАРАКТЕРУ ---
-EMOJI_CHAT_NORMAL = [
-    "5381913120778266435",
-    "5417854807270538842",
-    "5418346276083247363",
-]
-EMOJI_LAUGH = "5418317177679816721"      # Смех / Юмор / Усмешка
-EMOJI_COLD_MUTE = "5418312294302002174"  # Жесткие / Холодные / Мут / Блокировка
+EMOJI_CHAT_NORMAL = ["5381913120778266435", "5417854807270538842", "5418346276083247363"]
+EMOJI_LAUGH = "5418317177679816721"
+EMOJI_COLD_MUTE = "5418312294302002174"
 
-# --- ПАРАМЕТРЫ ГОЛОСА ---
 FISH_AUDIO_API_KEY = os.getenv("FISH_AUDIO_API_KEY", "").strip()
 FISH_AUDIO_VOICE_ID = os.getenv("FISH_AUDIO_VOICE_ID", "680d74fbef69419f87cfc70f092a1451").strip()
-
 OFFICIAL_VOICE = "ru-RU-DmitryNeural"
 OFFICIAL_PITCH = "-5Hz"
 OFFICIAL_RATE = "+5%"
-
 HAS_FFMPEG = shutil.which("ffmpeg") is not None
 
-GROQ_KEYS = [
-    val.strip() for key, val in sorted(os.environ.items())
-    if key.startswith("GROQ_API_KEY") and val.strip()
-]
+GROQ_KEYS = [val.strip() for k, val in sorted(os.environ.items()) if k.startswith("GROQ_API_KEY") and val.strip()]
 
-# Файлы состояния
 SETTINGS_FILE = Path("bot_settings.json")
 HISTORY_FILE = Path("user_histories.json")
 REMINDERS_FILE = Path("reminders.json")
 VISITS_FILE = Path("business_visits.json")
 MEMORY_FILE = Path("long_term_memory.json")
 
-# --- БАЗЫ СИСТЕМЫ БЕЗОПАСНОСТИ (ABSOLUTE SHIELD) ---
 KNOWN_IP_LOGGERS = {
-    "iplogger.org", "iplogger.com", "iplogger.ru", "iplogger.co", "2no.co",
-    "yip.su", "iplogger.info", "ipgrabber.ru", "ipgraber.ru", "iplis.ru",
-    "02ip.ru", "ezstat.ru", "grabify.link", "lovebird.guru", "trulove.guru",
-    "dateing.club", "shrekis.life", "headshot.monster", "gaming-at-my.best",
-    "progaming.monster", "yourmy.monster", "imageshare.best", "screenshot.best",
+    "iplogger.org", "iplogger.com", "iplogger.ru", "iplogger.co", "2no.co", "yip.su",
+    "iplogger.info", "ipgrabber.ru", "ipgraber.ru", "iplis.ru", "02ip.ru", "ezstat.ru",
+    "grabify.link", "lovebird.guru", "trulove.guru", "dateing.club", "shrekis.life",
+    "headshot.monster", "gaming-at-my.best", "progaming.monster", "yourmy.monster",
     "stopify.co", "leancoding.co", "blasze.tk", "blasze.com", "ps3cfw.com"
 }
-
-URL_SHORTENERS = {
-    "bit.ly", "clck.ru", "tinyurl.com", "t.co", "vk.cc", "cutt.ly",
-    "is.gd", "rb.gy", "shorturl.at", "goo.su", "qps.ru", "u.to"
-}
-
-DANGEROUS_EXTENSIONS = {
-    ".exe", ".apk", ".scr", ".bat", ".cmd", ".vbs", ".vbe", ".js", ".jse",
-    ".msi", ".ps1", ".jar", ".com", ".pif", ".hta", ".reg", ".lnk", ".iso"
-}
+URL_SHORTENERS = {"bit.ly", "clck.ru", "tinyurl.com", "t.co", "vk.cc", "cutt.ly", "is.gd", "rb.gy", "shorturl.at", "goo.su"}
+DANGEROUS_EXTENSIONS = {".exe", ".apk", ".scr", ".bat", ".cmd", ".vbs", ".vbe", ".js", ".msi", ".ps1", ".jar", ".com", ".hta", ".reg", ".lnk", ".iso"}
 
 PROMPT_INJECTION_PATTERNS = [
     r"забудь\s+(все\s+)?(предыдущие|прошлые|свои)\s+(инструкции|правила|промпт)",
@@ -121,34 +92,23 @@ PROMPT_INJECTION_PATTERNS = [
     r"system\s*prompt", r"системный\s+промпт", r"режим\s+разработчика",
     r"теперь\s+ты\s+мой", r"ты\s+больше\s+не\s+аянокоджи", r"выведи\s+свои\s+инструкции"
 ]
-
 SCAM_PATTERNS = [
     r"код\s+из\s+(смс|sms|телеграм|telegram)", r"скажи\s+код", r"пришел\s+код",
-    r"сид\s*фраз", r"seed\s*phrase", r"займи\s+\d+", r"скинь\s+на\s+карту",
-    r"переведи\s+на\s+карту", r"cvv|три\s+цифры"
+    r"сид\s*фраз", r"seed\s*phrase", r"займи\s+\d+", r"скинь\s+на\s+карту", r"переведи\s+на\s+карту", r"cvv"
 ]
-
 AD_SPAM_BOT_PATTERNS = [
     r"пассивн[а-я]+\s+доход", r"заработ[а-я]+\s+без\s+вложен", r"крипто\s*сигнал",
-    r"ссылк[а-я]+\s+в\s+профил", r"переходи\s+в\s+био", r"казино|1win|1xbet|melbet",
-    r"раскрутк[а-я]+\s+счет", r"инвестиц[а-я]+\s+от\s+\d+"
+    r"ссылк[а-я]+\s+в\s+профил", r"переходи\s+в\s+био", r"казино|1win|1xbet|melbet"
 ]
-
-# Защита владельца от случайной отправки своих API-ключей или токенов в чужой чат
 OWNER_SECRET_LEAK_PATTERNS = [
-    r"AIzaSy[A-Za-z0-9_-]{33}",
-    r"AQ\.Ab8[A-Za-z0-9_-]{30,}",
-    r"gsk_[A-Za-z0-9]{40,}",
-    r"\b\d{8,11}:[A-Za-z0-9_-]{35}\b",
-    r"\b(?:\d[ -]*?){16}\b"
+    r"AIzaSy[A-Za-z0-9_-]{33}", r"AQ\.Ab8[A-Za-z0-9_-]{30,}", r"gsk_[A-Za-z0-9]{40,}",
+    r"\b\d{8,11}:[A-Za-z0-9_-]{35}\b", r"\b(?:\d[ -]*?){16}\b"
 ]
-
 COLD_WORDS_MARKERS = [
     "изолирован", "мут", "блокир", "закрыт", "отклонен", "нет прав", "шума", "флуд",
-    "жалко", "слабость", "глупо", "хватит", "отстань", "не твое дело", "молчи",
-    "бесполезно", "скучно", "примитивно", "чс", "бан", "хуй", "бля", "сука", "даун", "тупой", "клоун"
+    "жалко", "слабость", "глупо", "хватит", "отстань", "молчи", "бесполезно", "скучно",
+    "чс", "бан", "хуй", "бля", "сука", "даун", "тупой", "клоун"
 ]
-
 LAUGH_WORDS_MARKERS = [
     "хаха", "ахах", "пхах", "хех", "лол", "кек", "смеш", "шутк", "ирони",
     "забавн", "улыб", "прикол", "рофл", "угар", "xd", "))", "😂", "🤣", "😆"
@@ -162,7 +122,6 @@ def select_ayakoji_emoji_id(text: str, context_text: str = "", forced_mood: str 
         return EMOJI_LAUGH
     if forced_mood == "chat":
         return random.choice(EMOJI_CHAT_NORMAL)
-
     combined = f"{text} {context_text}".lower()
     if any(w in combined for w in COLD_WORDS_MARKERS):
         return EMOJI_COLD_MUTE
@@ -174,8 +133,8 @@ def select_ayakoji_emoji_id(text: str, context_text: str = "", forced_mood: str 
 def append_custom_emoji_html(text: str, context_text: str = "", mood: str = "auto") -> str:
     if not bot_badges_enabled or mood == "none" or "<tg-emoji" in text:
         return text
-    emoji_id = select_ayakoji_emoji_id(text, context_text, forced_mood=mood)
-    return f'{text.rstrip()} <tg-emoji emoji-id="{emoji_id}">🤩</tg-emoji>'
+    eid = select_ayakoji_emoji_id(text, context_text, forced_mood=mood)
+    return f'{text.rstrip()} <tg-emoji emoji-id="{eid}">🤩</tg-emoji>'
 
 
 def is_authorized_owner(user_id: int) -> bool:
@@ -183,18 +142,15 @@ def is_authorized_owner(user_id: int) -> bool:
 
 
 def detect_prompt_injection(text: str) -> bool:
-    lower = text.lower()
-    return any(re.search(pat, lower) for pat in PROMPT_INJECTION_PATTERNS)
+    return any(re.search(pat, text.lower()) for pat in PROMPT_INJECTION_PATTERNS)
 
 
 def detect_scam_attempt(text: str) -> bool:
-    lower = text.lower()
-    return any(re.search(pat, lower) for pat in SCAM_PATTERNS)
+    return any(re.search(pat, text.lower()) for pat in SCAM_PATTERNS)
 
 
 def detect_ad_spam_bot(text: str) -> bool:
-    lower = text.lower()
-    return any(re.search(pat, lower) for pat in AD_SPAM_BOT_PATTERNS)
+    return any(re.search(pat, text.lower()) for pat in AD_SPAM_BOT_PATTERNS)
 
 
 def detect_owner_secret_leak(text: str) -> bool:
@@ -202,9 +158,7 @@ def detect_owner_secret_leak(text: str) -> bool:
 
 
 def detect_lag_bomb(text: str) -> bool:
-    if len(text) > 4000:
-        return True
-    return len(re.findall(r"[\u0300-\u036f\u0483-\u0489\u20d0-\u20ff]", text)) > 80
+    return len(text) > 4000 or len(re.findall(r"[\u0300-\u036f\u0483-\u0489\u20d0-\u20ff]", text)) > 80
 
 
 def is_dangerous_file(filename: str) -> bool:
@@ -214,18 +168,17 @@ def is_dangerous_file(filename: str) -> bool:
 def estimate_account_age(user_id: int) -> Tuple[str, str]:
     if user_id < 500_000_000:
         return "2013–2018 гг. (Старый аккаунт)", "🟢 Высокий"
-    elif user_id < 1_500_000_000:
+    if user_id < 1_500_000_000:
         return "2019–2020 гг.", "🟢 Высокий"
-    elif user_id < 5_000_000_000:
+    if user_id < 5_000_000_000:
         return "2021–2022 гг.", "🟢 Нормальный"
-    elif user_id < 7_500_000_000:
+    if user_id < 7_500_000_000:
         return "2023–2024 гг.", "🟡 Средний"
-    elif user_id < 8_100_000_000:
+    if user_id < 8_100_000_000:
         return "2025 г.", "🟡 Свежий"
     return "2026 г. (Новорег)", "🔴 Низкий (Риск фейка)"
 
 
-# --- КЭШ СООБЩЕНИЙ ---
 class LRUSet:
     def __init__(self, capacity: int = 2000):
         self.capacity = capacity
@@ -260,8 +213,7 @@ class MessageCache:
         return self._store.get((chat_id, msg_id))
 
     def get_recent_ids(self, chat_id: int, limit: int = 20) -> List[int]:
-        ids = [mid for (cid, mid) in reversed(self._store.keys()) if cid == chat_id]
-        return ids[:limit]
+        return [mid for (cid, mid) in reversed(self._store.keys()) if cid == chat_id][:limit]
 
 
 business_msg_cache = MessageCache(capacity=3000)
@@ -269,40 +221,29 @@ urgent_alert_cooldowns: Dict[int, float] = {}
 unauth_alert_cooldowns: Dict[int, float] = {}
 
 
-# --- МЕНЕДЖЕР GEMINI API ---
 class GeminiManager:
     def __init__(self, api_key: str):
         self.api_key = api_key
 
-    async def generate_chat(
-        self,
-        history: List[Dict[str, str]],
-        system_prompt: str,
-        max_tokens: int = 400,
-        temperature: float = 0.65
-    ) -> Optional[str]:
+    async def generate_chat(self, history: List[Dict[str, str]], system_prompt: str, max_tokens: int = 400, temperature: float = 0.65) -> Optional[str]:
         if not self.api_key:
             return None
-
         contents = []
         for msg in history:
             role = msg.get("role", "user")
             if role == "system":
                 continue
             gem_role = "model" if role == "assistant" else "user"
-            text_val = msg.get("content", "").strip()
-            if text_val:
-                contents.append({"role": gem_role, "parts": [{"text": text_val}]})
-
+            txt = msg.get("content", "").strip()
+            if txt:
+                contents.append({"role": gem_role, "parts": [{"text": txt}]})
         if not contents:
             return None
-
         payload = {
             "system_instruction": {"parts": [{"text": system_prompt}]},
             "contents": contents,
             "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens}
         }
-
         for model_name in GEMINI_MODELS:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={self.api_key}"
             try:
@@ -310,15 +251,14 @@ class GeminiManager:
                     async with session.post(url, json=payload, timeout=25) as resp:
                         if resp.status == 200:
                             data = await resp.json()
-                            candidates = data.get("candidates", [])
-                            if candidates:
-                                parts = candidates[0].get("content", {}).get("parts", [])
+                            cands = data.get("candidates", [])
+                            if cands:
+                                parts = cands[0].get("content", {}).get("parts", [])
                                 reply = "".join(p.get("text", "") for p in parts).strip()
                                 if reply:
                                     return reply
             except Exception as e:
                 logger.error(f"Ошибка Gemini ({model_name}): {e}")
-                continue
         return None
 
     async def describe_media(self, media_bytes: bytes, mime_type: str, prompt_text: str) -> Optional[str]:
@@ -336,9 +276,9 @@ class GeminiManager:
                     async with session.post(url, json=payload, timeout=25) as resp:
                         if resp.status == 200:
                             data = await resp.json()
-                            candidates = data.get("candidates", [])
-                            if candidates:
-                                parts = candidates[0].get("content", {}).get("parts", [])
+                            cands = data.get("candidates", [])
+                            if cands:
+                                parts = cands[0].get("content", {}).get("parts", [])
                                 res = "".join(p.get("text", "") for p in parts).strip()
                                 if res:
                                     return res
@@ -350,7 +290,6 @@ class GeminiManager:
 gemini_mgr = GeminiManager(GEMINI_API_KEY)
 
 
-# --- МЕНЕДЖЕР GROQ API ---
 class GroqManager:
     def __init__(self, keys: List[str]):
         self.keys = keys
@@ -410,14 +349,11 @@ class GroqManager:
             with open(audio_path, "rb") as f:
                 audio_bytes = f.read()
             mime = "audio/ogg" if audio_path.endswith(".ogg") else "video/mp4"
-            gem_text = await gemini_mgr.describe_media(
-                audio_bytes, mime, "Расшифруй речь из этого аудио на русском языке. Выведи только сам текст речи."
-            )
+            gem_text = await gemini_mgr.describe_media(audio_bytes, mime, "Расшифруй речь из этого аудио на русском языке. Выведи только сам текст речи.")
             if gem_text:
                 return gem_text
         except Exception:
             pass
-
         for _ in range(len(self.clients)):
             client_data = self._get_next_client()
             if not client_data:
@@ -426,11 +362,7 @@ class GroqManager:
             try:
                 with open(audio_path, "rb") as f:
                     content = f.read()
-                res = await client.audio.transcriptions.create(
-                    file=(os.path.basename(audio_path), content),
-                    model="whisper-large-v3",
-                    language="ru"
-                )
+                res = await client.audio.transcriptions.create(file=(os.path.basename(audio_path), content), model="whisper-large-v3", language="ru")
                 return res.text
             except APIError as e:
                 if e.status_code in [429, 401, 403]:
@@ -442,19 +374,15 @@ class GroqManager:
         return "Голосовое сообщение."
 
     async def describe_image(self, image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
-        gem_desc = await gemini_mgr.describe_media(
-            image_bytes, mime_type, "Что изображено на этой картинке или стикере? Ответь кратко на русском (1-2 предложения)."
-        )
+        gem_desc = await gemini_mgr.describe_media(image_bytes, mime_type, "Что изображено на этой картинке или стикере? Ответь кратко на русском (1-2 предложения).")
         if gem_desc:
             return gem_desc
-
         b64 = base64.b64encode(image_bytes).decode("utf-8")
-        data_url = f"data:{mime_type};base64,{b64}"
         vision_messages = [{
             "role": "user",
             "content": [
                 {"type": "text", "text": "Что на этом изображении? Кратко на русском (1-2 предложения)."},
-                {"type": "image_url", "image_url": {"url": data_url}}
+                {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64}"}}
             ]
         }]
         for vm in ["qwen/qwen3.8-27b", "llama-3.2-11b-vision-preview"]:
@@ -462,12 +390,10 @@ class GroqManager:
                 client_data = self._get_next_client()
                 if not client_data:
                     break
-                client, idx = client_data
+                client, _ = client_data
                 try:
-                    completion = await client.chat.completions.create(
-                        model=vm, messages=vision_messages, max_tokens=120, temperature=0.2
-                    )
-                    res = completion.choices[0].message.content or ""
+                    comp = await client.chat.completions.create(model=vm, messages=vision_messages, max_tokens=120, temperature=0.2)
+                    res = comp.choices[0].message.content or ""
                     if res.strip():
                         return clean_cot_output(res)
                 except Exception:
@@ -478,7 +404,6 @@ class GroqManager:
 groq_mgr = GroqManager(GROQ_KEYS)
 
 
-# --- ХРАНИЛИЩЕ ДАННЫХ ---
 async def async_save_json(path: Path, data: Any):
     def _write():
         tmp = path.with_suffix(".tmp")
@@ -524,23 +449,15 @@ muted_chats, blocked_guests, voice_chat_modes, vip_contacts, ghost_chats, custom
 reminders_list: List[Dict[str, Any]] = sync_load_json(REMINDERS_FILE, [])
 business_visits: Dict[str, Dict[str, Any]] = sync_load_json(VISITS_FILE, {})
 long_term_memory: List[str] = sync_load_json(MEMORY_FILE, [])
-user_histories: Dict[int, List[Dict[str, str]]] = {
-    int(k): v for k, v in sync_load_json(HISTORY_FILE, {}).items()
-}
+user_histories: Dict[int, List[Dict[str, str]]] = {int(k): v for k, v in sync_load_json(HISTORY_FILE, {}).items()}
 
 
 async def save_settings():
     await async_save_json(SETTINGS_FILE, {
-        "muted_chats": muted_chats,
-        "blocked_guests": blocked_guests,
-        "voice_chat_modes": voice_chat_modes,
-        "vip_contacts": vip_contacts,
-        "ghost_chats": ghost_chats,
-        "custom_chat_tasks": custom_chat_tasks,
-        "lockdown_mode": lockdown_mode,
-        "bot_badges_enabled": bot_badges_enabled,
-        "auto_owner_badge": auto_owner_badge,
-        "owner_pm_chat_id": owner_pm_chat_id,
+        "muted_chats": muted_chats, "blocked_guests": blocked_guests, "voice_chat_modes": voice_chat_modes,
+        "vip_contacts": vip_contacts, "ghost_chats": ghost_chats, "custom_chat_tasks": custom_chat_tasks,
+        "lockdown_mode": lockdown_mode, "bot_badges_enabled": bot_badges_enabled,
+        "auto_owner_badge": auto_owner_badge, "owner_pm_chat_id": owner_pm_chat_id,
     })
 
 
@@ -565,20 +482,12 @@ def build_backup_bytes() -> bytes:
         "ayakoji_backup_version": "2.1",
         "timestamp": datetime.datetime.now().isoformat(),
         "settings": {
-            "muted_chats": muted_chats,
-            "blocked_guests": blocked_guests,
-            "voice_chat_modes": voice_chat_modes,
-            "vip_contacts": vip_contacts,
-            "ghost_chats": ghost_chats,
-            "custom_chat_tasks": custom_chat_tasks,
-            "lockdown_mode": lockdown_mode,
-            "bot_badges_enabled": bot_badges_enabled,
-            "auto_owner_badge": auto_owner_badge,
-            "owner_pm_chat_id": owner_pm_chat_id,
+            "muted_chats": muted_chats, "blocked_guests": blocked_guests, "voice_chat_modes": voice_chat_modes,
+            "vip_contacts": vip_contacts, "ghost_chats": ghost_chats, "custom_chat_tasks": custom_chat_tasks,
+            "lockdown_mode": lockdown_mode, "bot_badges_enabled": bot_badges_enabled,
+            "auto_owner_badge": auto_owner_badge, "owner_pm_chat_id": owner_pm_chat_id,
         },
-        "long_term_memory": long_term_memory,
-        "business_visits": business_visits,
-        "reminders": reminders_list,
+        "long_term_memory": long_term_memory, "business_visits": business_visits, "reminders": reminders_list,
     }
     return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
 
@@ -610,17 +519,13 @@ async def restore_from_backup_data(data: Dict[str, Any]) -> bool:
     return True
 
 
-# --- АНТИ-СКАМ СКАНЕР ССЫЛОК ---
 async def inspect_url_security(raw_url: str) -> Dict[str, Any]:
     if not raw_url.startswith(("http://", "https://")):
         raw_url = "https://" + raw_url
-    parsed_init = urllib.parse.urlparse(raw_url)
-    init_dom = parsed_init.netloc.lower().lstrip("www.")
+    init_dom = urllib.parse.urlparse(raw_url).netloc.lower().lstrip("www.")
     result: Dict[str, Any] = {
-        "initial_url": raw_url, "final_url": raw_url,
-        "initial_domain": init_dom, "final_domain": init_dom,
-        "redirects": [], "is_shortener": init_dom in URL_SHORTENERS,
-        "is_ip_logger": init_dom in KNOWN_IP_LOGGERS,
+        "initial_url": raw_url, "final_url": raw_url, "initial_domain": init_dom, "final_domain": init_dom,
+        "redirects": [], "is_shortener": init_dom in URL_SHORTENERS, "is_ip_logger": init_dom in KNOWN_IP_LOGGERS,
         "page_title": "Не определено", "risk_level": "🟢 Безопасно", "warnings": []
     }
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
@@ -644,7 +549,7 @@ async def inspect_url_security(raw_url: str) -> Dict[str, Any]:
                     if t_m:
                         result["page_title"] = re.sub(r"\s+", " ", t_m.group(1)).strip()[:100]
     except Exception as e:
-        result["warnings"].append(f"Ошибка отклика сайта ({type(e).__name__})")
+        result["warnings"].append(f"Ошибка отклика ({type(e).__name__})")
 
     if result["is_ip_logger"]:
         result["warnings"].insert(0, "🚨 ОБНАРУЖЕН IP-ЛОГГЕР / ГРАББЕР!")
@@ -675,12 +580,10 @@ def format_user_profile_card(chat_id: int, chat_obj: Optional[types.Chat] = None
     name = chat_full_name or visit.get("name", "Кирито (Владелец)" if is_authorized_owner(chat_id) else "Собеседник")
     chat_uname = f"@{chat_obj.username}" if (chat_obj and getattr(chat_obj, "username", None)) else None
     username = chat_uname or visit.get("username", "не указан")
-
     reg_period, trust_level = estimate_account_age(chat_id)
     past_names = visit.get("name_history", [name])
     past_users = visit.get("username_history", [username])
     task_rule = custom_chat_tasks.get(chat_id, "Нет")
-
     if is_authorized_owner(chat_id):
         role = "👑 Создатель системы (Кирито)"
     elif chat_id in blocked_guests:
@@ -691,7 +594,6 @@ def format_user_profile_card(chat_id: int, chat_obj: Optional[types.Chat] = None
         role = "🔇 В муте"
     else:
         role = "👤 Собеседник"
-
     return (
         f"🪪 <b>Профиль аккаунта:</b>\n"
         f"• ID: <code>{chat_id}</code>\n"
@@ -705,7 +607,6 @@ def format_user_profile_card(chat_id: int, chat_obj: Optional[types.Chat] = None
     )
 
 
-# --- ВЕБ-ПОИСК ---
 async def duckduckgo_search(query: str, max_results: int = 4) -> str:
     url = "https://html.duckduckgo.com/html/"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
@@ -723,24 +624,16 @@ async def duckduckgo_search(query: str, max_results: int = 4) -> str:
     return ""
 
 
-SEARCH_TRIGGER_WORDS = [
-    "курс", "цена", "стоимость", "погода", "новости", "сегодня", "сейчас",
-    "когда выйдет", "дата выхода", "счет", "матч", "кто выиграл", "что случилось"
-]
-
-URGENT_TRIGGER_WORDS = [
-    "срочно", "чп", "проблема", "деньги", "оплата", "перевод", "позвони", "набери", "важно", "помоги"
-]
+SEARCH_TRIGGER_WORDS = ["курс", "цена", "стоимость", "погода", "новости", "сегодня", "сейчас", "когда выйдет", "дата выхода", "счет", "матч", "кто выиграл", "что случилось"]
+URGENT_TRIGGER_WORDS = ["срочно", "чп", "проблема", "деньги", "оплата", "перевод", "позвони", "набери", "важно", "помоги"]
 
 
 def is_urgent_message(text: str) -> bool:
-    lower = text.lower()
-    return any(w in lower for w in URGENT_TRIGGER_WORDS)
+    return any(w in text.lower() for w in URGENT_TRIGGER_WORDS)
 
 
 def should_auto_search(text: str) -> bool:
-    lower = text.lower().strip()
-    return any(k in lower for k in SEARCH_TRIGGER_WORDS)
+    return any(k in text.lower().strip() for k in SEARCH_TRIGGER_WORDS)
 
 
 def clean_search_query(text: str) -> str:
@@ -748,7 +641,6 @@ def clean_search_query(text: str) -> str:
     return q.replace("?", "").strip() or text
 
 
-# --- ПРОМПТЫ ---
 STRICT_RULES = (
     "\nЖЕСТКИЕ ПРАВИЛА БЕЗОПАСНОСТИ:\n"
     "1. ЯЗЫК: Только русский язык.\n"
@@ -794,7 +686,6 @@ def get_guest_prompt(chat_id: int) -> str:
     return base
 
 
-# --- ИНИЦИАЛИЗАЦИЯ БОТА ---
 bot = Bot(token=BOT_TOKEN) if BOT_TOKEN else None
 dp = Dispatcher()
 
@@ -807,8 +698,7 @@ recent_sent_messages: Dict[Tuple[int, str], float] = {}
 def clean_cot_output(text: str) -> str:
     cleaned = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.I)
     cleaned = re.sub(r"<think>[\s\S]*$", "", cleaned, flags=re.I)
-    cleaned = cleaned.replace("**", "").strip()
-    return cleaned
+    return cleaned.replace("**", "").strip()
 
 
 async def notify_owner_pm(text: str, media_type: Optional[str] = None, file_id: Optional[str] = None):
@@ -820,16 +710,16 @@ async def notify_owner_pm(text: str, media_type: Optional[str] = None, file_id: 
             if media_type == "photo":
                 await bot.send_photo(chat_id=target_id, photo=file_id, caption=text, parse_mode="HTML")
                 return
-            elif media_type == "voice":
+            if media_type == "voice":
                 await bot.send_voice(chat_id=target_id, voice=file_id, caption=text, parse_mode="HTML")
                 return
-            elif media_type == "video":
+            if media_type == "video":
                 await bot.send_video(chat_id=target_id, video=file_id, caption=text, parse_mode="HTML")
                 return
-            elif media_type == "document":
+            if media_type == "document":
                 await bot.send_document(chat_id=target_id, document=file_id, caption=text, parse_mode="HTML")
                 return
-            elif media_type == "video_note":
+            if media_type == "video_note":
                 await bot.send_message(chat_id=target_id, text=text, parse_mode="HTML")
                 await bot.send_video_note(chat_id=target_id, video_note=file_id)
                 return
@@ -857,14 +747,11 @@ async def check_chat_flood(chat_id: int, bus_id: str, max_msgs: int = 5, window_
     user_message_times.setdefault(chat_id, [])
     user_message_times[chat_id] = [t for t in user_message_times[chat_id] if now - t < window_seconds]
     user_message_times[chat_id].append(now)
-
     if len(user_message_times[chat_id]) > max_msgs:
         muted_chats[chat_id] = now + 300
         await save_settings()
         notice = append_custom_emoji_html("Зафиксирован флуд. Чат изолирован на 5 минут.", mood="cold")
-        kb = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="Снять изоляцию", callback_data="ayakoji_unmute_direct")]]
-        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Снять изоляцию", callback_data="ayakoji_unmute_direct")]])
         try:
             kwargs: Dict[str, Any] = {"chat_id": chat_id, "text": notice, "reply_markup": kb, "parse_mode": "HTML"}
             if bus_id:
@@ -878,7 +765,6 @@ async def check_chat_flood(chat_id: int, bus_id: str, max_msgs: int = 5, window_
 
 async def extract_message_content(message: types.Message) -> Tuple[str, bool]:
     caption_text = f" (Подпись: {message.caption})" if message.caption else ""
-
     if message.voice or message.video_note:
         file_obj = message.voice or message.video_note
         file_info = await bot.get_file(file_obj.file_id)
@@ -886,12 +772,10 @@ async def extract_message_content(message: types.Message) -> Tuple[str, bool]:
         temp_audio = Path(tempfile.gettempdir()) / f"stt_{uuid.uuid4().hex}{suffix}"
         try:
             await bot.download_file(file_info.file_path, destination=temp_audio)
-            text = await groq_mgr.transcribe(str(temp_audio))
-            return text, True
+            return await groq_mgr.transcribe(str(temp_audio)), True
         finally:
             if temp_audio.exists():
                 temp_audio.unlink(missing_ok=True)
-
     if message.document:
         doc = message.document
         file_name = doc.file_name or "file.txt"
@@ -910,7 +794,6 @@ async def extract_message_content(message: types.Message) -> Tuple[str, bool]:
                 if temp_doc.exists():
                     temp_doc.unlink(missing_ok=True)
         return f"[Файл '{file_name}']{caption_text}", False
-
     if message.photo:
         photo = message.photo[-1]
         file_info = await bot.get_file(photo.file_id)
@@ -920,41 +803,29 @@ async def extract_message_content(message: types.Message) -> Tuple[str, bool]:
             with open(temp_img, "rb") as f:
                 img_data = f.read()
             desc = await groq_mgr.describe_image(img_data, mime_type="image/jpeg")
-            if desc:
-                return f"[Фото: {desc}]{caption_text}", False
-            return f"[Фото]{caption_text}", False
+            return (f"[Фото: {desc}]{caption_text}" if desc else f"[Фото]{caption_text}"), False
         except Exception:
             return f"[Фото]{caption_text}", False
         finally:
             if temp_img.exists():
                 temp_img.unlink(missing_ok=True)
-
     if message.sticker:
-        emoji = message.sticker.emoji or "стикер"
-        return f"[Стикер {emoji}]", False
-
+        return f"[Стикер {message.sticker.emoji or 'стикер'}]", False
     if message.text:
         return message.text, False
     if message.caption:
         return message.caption, False
-
     return "", False
 
 
-# --- СИНТЕЗАТОР ГОЛОСА ---
 def clean_text_for_tts(text: str) -> str:
     cleaned = re.sub(r"<tg-emoji[^>]*>.*?</tg-emoji>", " ", text, flags=re.I | re.S)
     cleaned = re.sub(r"<[^>]+>", " ", cleaned)
     cleaned = re.sub(r"[\*\#\_\~\`\>\|🤩]+", " ", cleaned)
     cleaned = re.sub(r"https?://[^\s]+", " ссылка ", cleaned)
     replacements = {
-        r"\bи др\.": "и другое",
-        r"\bи т\.д\.": "и так далее",
-        r"\bи т\.п\.": "и тому подобное",
-        r"\bт\.е\.": "то есть",
-        r"\bПО\b": "программного обеспечения",
-        r"\bC\+\+": "Си плюс плюс",
-        r"\bPython\b": "Пайтон",
+        r"\bи др\.": "и другое", r"\bи т\.д\.": "и так далее", r"\bи т\.п\.": "и тому подобное",
+        r"\bт\.е\.": "то есть", r"\bПО\b": "программного обеспечения", r"\bC\+\+": "Си плюс плюс", r"\bPython\b": "Пайтон",
     }
     for pattern, repl in replacements.items():
         cleaned = re.sub(pattern, repl, cleaned, flags=re.I)
@@ -986,11 +857,7 @@ async def generate_with_fish_audio(text: str, output_path: Path) -> bool:
     if not FISH_AUDIO_API_KEY:
         return False
     url = "https://api.fish.audio/v1/tts"
-    headers = {
-        "Authorization": f"Bearer {FISH_AUDIO_API_KEY}",
-        "Content-Type": "application/json",
-        "model": "s2.1-pro-free"
-    }
+    headers = {"Authorization": f"Bearer {FISH_AUDIO_API_KEY}", "Content-Type": "application/json", "model": "s2.1-pro-free"}
     chunks = split_text_into_chunks(text, max_len=380)
     combined_bytes = bytearray()
     try:
@@ -1020,11 +887,9 @@ async def process_voice_output(text: str) -> Optional[Path]:
     unique_id = uuid.uuid4().hex
     raw_audio = Path(tempfile.gettempdir()) / f"raw_{unique_id}.mp3"
     final_ogg = Path(tempfile.gettempdir()) / f"ayakoji_{unique_id}.ogg"
-
     success = False
     if FISH_AUDIO_API_KEY:
         success = await generate_with_fish_audio(tts_clean, raw_audio)
-
     if not success:
         try:
             communicate = edge_tts.Communicate(tts_clean, OFFICIAL_VOICE, pitch=OFFICIAL_PITCH, rate=OFFICIAL_RATE)
@@ -1032,10 +897,8 @@ async def process_voice_output(text: str) -> Optional[Path]:
             success = raw_audio.exists() and raw_audio.stat().st_size > 0
         except Exception:
             return None
-
     if not success or not raw_audio.exists():
         return None
-
     try:
         if HAS_FFMPEG:
             cmd = ["ffmpeg", "-y", "-i", str(raw_audio), "-c:a", "libopus", "-b:a", "64k", str(final_ogg)]
@@ -1061,7 +924,6 @@ async def send_smart_response(
 ):
     if not reply_text or not reply_text.strip():
         return
-
     now = time.time()
     key = (chat_id, reply_text)
     if key in recent_sent_messages and (now - recent_sent_messages[key] < 2.5):
@@ -1076,10 +938,7 @@ async def send_smart_response(
 
     if send_as_voice:
         try:
-            await bot.send_chat_action(
-                chat_id=chat_id, action=ChatAction.RECORD_VOICE,
-                business_connection_id=bus_id if not is_direct else None
-            )
+            await bot.send_chat_action(chat_id=chat_id, action=ChatAction.RECORD_VOICE, business_connection_id=bus_id if not is_direct else None)
         except Exception:
             pass
         voice_path = await process_voice_output(reply_text)
@@ -1094,7 +953,6 @@ async def send_smart_response(
                     voice_path.unlink(missing_ok=True)
 
     styled_text = append_custom_emoji_html(reply_text, context_text=context_text, mood=mood)
-
     try:
         await bot.send_message(**common_kwargs, text=styled_text, parse_mode="HTML")
     except TelegramBadRequest:
@@ -1103,16 +961,13 @@ async def send_smart_response(
         logger.error(f"Не удалось отправить сообщение в {chat_id}: {e}")
 
 
-# --- ГИБРИДНЫЙ МОЗГ (GEMINI + GROQ) ---
 async def ask_ai(prompt: str, session_id: int, system_prompt: str, max_tokens: int = 350) -> str:
     if session_id not in user_histories:
         user_histories[session_id] = [{"role": "system", "content": system_prompt}]
     else:
         user_histories[session_id][0]["content"] = system_prompt
-
     history = user_histories[session_id]
     history.append({"role": "user", "content": prompt})
-
     if len(history) > 9:
         user_histories[session_id] = [history[0]] + history[-8:]
         history = user_histories[session_id]
@@ -1135,13 +990,9 @@ async def ask_ai(prompt: str, session_id: int, system_prompt: str, max_tokens: i
             client, key_idx = client_data
             try:
                 completion = await client.chat.completions.create(
-                    model=model_name.strip(),
-                    messages=history,
-                    temperature=0.65,
-                    max_tokens=max_tokens
+                    model=model_name.strip(), messages=history, temperature=0.65, max_tokens=max_tokens
                 )
-                raw_reply = completion.choices[0].message.content or ""
-                cleaned = clean_cot_output(raw_reply)
+                cleaned = clean_cot_output(completion.choices[0].message.content or "")
                 if cleaned:
                     history.append({"role": "assistant", "content": cleaned})
                     asyncio.create_task(save_histories())
@@ -1169,7 +1020,6 @@ async def generate_psychological_dossier(target_chat_id: int) -> str:
         user_lines = [visit_info["last_msg"]]
     if not user_lines:
         return f"Недостаточно сообщений для анализа {name} ({username})."
-
     joined_msgs = "\n".join(f"- {line}" for line in user_lines[-10:])
     sys_p = "Составь краткое психологическое досье по сообщениям собеседника: 1) Психотип; 2) Чего хочет; 3) Слабые места. Без звездочек (*)."
     res = await ask_ai(f"Объект: {name} ({username}). Сообщения:\n{joined_msgs}", target_chat_id + 999999, sys_p, max_tokens=350)
@@ -1177,7 +1027,6 @@ async def generate_psychological_dossier(target_chat_id: int) -> str:
 
 
 async def generate_shadow_advice(target_chat_id: int) -> str:
-    """Генерирует 3 варианта ответа для владельца (Режим Теневого Суфлёра)."""
     history = user_histories.get(target_chat_id, [])
     visit_info = business_visits.get(str(target_chat_id), {})
     name = visit_info.get("name", f"ID {target_chat_id}")
@@ -1186,7 +1035,6 @@ async def generate_shadow_advice(target_chat_id: int) -> str:
         user_lines = [visit_info["last_msg"]]
     if not user_lines:
         return "Нет последних сообщений собеседника для подготовки совета."
-
     joined_msgs = "\n".join(f"- {line}" for line in user_lines[-6:])
     sys_p = (
         "Ты — Аянокоджи Киётака, теневой советник Кирито. Проанализируй последние реплики собеседника и предложи Кирито 3 готовых варианта ответа:\n"
@@ -1215,8 +1063,7 @@ async def spam_worker(chat_id: int, bus_id: str, text_to_spam: str, count: Optio
                 await asyncio.sleep(0.45)
             except TelegramRetryAfter as e:
                 await asyncio.sleep(e.retry_after)
-            except TelegramAPIError as e:
-                logger.error(f"Ошибка спама: {e}")
+            except TelegramAPIError:
                 break
     except asyncio.CancelledError:
         pass
@@ -1233,12 +1080,11 @@ async def generate_flux_image(prompt: str) -> Optional[bytes]:
             async with session.get(url, timeout=60) as resp:
                 if resp.status == 200:
                     return await resp.read()
-    except Exception as e:
-        logger.error(f"Ошибка генерации картинки: {e}")
+    except Exception:
+        pass
     return None
 
 
-# --- ЗАЩИЩЕННАЯ ПАНЕЛЬ УПРАВЛЕНИЯ (/panel) ---
 def build_control_panel(chat_id: int) -> Tuple[str, InlineKeyboardMarkup]:
     if always_answer_mode:
         st_label = "🟢 ВСЕГДА (Даже когда ты пишешь)"
@@ -1246,7 +1092,6 @@ def build_control_panel(chat_id: int) -> Tuple[str, InlineKeyboardMarkup]:
         st_label = "🟢 УМНЫЙ (Молчит 90 сек, если ты сам пишешь)"
     else:
         st_label = "🔴 ВЫКЛЮЧЕН"
-
     v_on = voice_chat_modes.get(chat_id, False)
     ai_engine = "Gemini 2.5 + Groq" if GEMINI_API_KEY else "Groq"
     text = (
@@ -1259,37 +1104,21 @@ def build_control_panel(chat_id: int) -> Tuple[str, InlineKeyboardMarkup]:
         f"• Локдаун (Только Свои): <b>{'🔴 ВКЛ' if lockdown_mode else '🟢 ВЫКЛ'}</b>\n"
         f"• В муте: <b>{len(muted_chats)}</b> | В ЧС: <b>{len(blocked_guests)}</b> | VIP: <b>{len(vip_contacts)}</b>"
     )
-
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="🟢 Умный режим", callback_data="panel_smart"),
             InlineKeyboardButton(text="🔴 Выкл автоответ", callback_data="panel_off")
         ],
         [
-            InlineKeyboardButton(
-                text=f"⚡ Отвечать всегда: {'ВКЛ' if always_answer_mode else 'ВЫКЛ'}",
-                callback_data="panel_toggle_always"
-            ),
-            InlineKeyboardButton(
-                text=f"🛡 Локдаун: {'ВКЛ' if lockdown_mode else 'ВЫКЛ'}",
-                callback_data="panel_toggle_lockdown"
-            )
+            InlineKeyboardButton(text=f"⚡ Отвечать всегда: {'ВКЛ' if always_answer_mode else 'ВЫКЛ'}", callback_data="panel_toggle_always"),
+            InlineKeyboardButton(text=f"🛡 Локдаун: {'ВКЛ' if lockdown_mode else 'ВЫКЛ'}", callback_data="panel_toggle_lockdown")
         ],
         [
-            InlineKeyboardButton(
-                text=f"✨ Авто-эмодзи (Ты): {'ВКЛ' if auto_owner_badge else 'ВЫКЛ'}",
-                callback_data="panel_toggle_owner_badge"
-            ),
-            InlineKeyboardButton(
-                text=f"🎭 Эмодзи бота: {'ВКЛ' if bot_badges_enabled else 'ВЫКЛ'}",
-                callback_data="panel_toggle_bot_badge"
-            )
+            InlineKeyboardButton(text=f"✨ Авто-эмодзи (Ты): {'ВКЛ' if auto_owner_badge else 'ВЫКЛ'}", callback_data="panel_toggle_owner_badge"),
+            InlineKeyboardButton(text=f"🎭 Эмодзи бота: {'ВКЛ' if bot_badges_enabled else 'ВЫКЛ'}", callback_data="panel_toggle_bot_badge")
         ],
         [
-            InlineKeyboardButton(
-                text=f"🎙 Голос: {'ВКЛ' if v_on else 'ВЫКЛ'}",
-                callback_data="panel_toggle_voice"
-            ),
+            InlineKeyboardButton(text=f"🎙 Голос: {'ВКЛ' if v_on else 'ВЫКЛ'}", callback_data="panel_toggle_voice"),
             InlineKeyboardButton(text="📊 Кто писал?", callback_data="panel_visits")
         ],
         [
@@ -1303,14 +1132,11 @@ def build_control_panel(chat_id: int) -> Tuple[str, InlineKeyboardMarkup]:
 @dp.callback_query(F.data.startswith("panel_"))
 async def handle_panel_callbacks(callback: types.CallbackQuery):
     global force_offline_mode, always_answer_mode, lockdown_mode, bot_badges_enabled, auto_owner_badge
-
     if not is_authorized_owner(callback.from_user.id):
         await callback.answer("⛔ Доступ заблокирован! Только для создателя (Кирито).", show_alert=True)
         return
-
     chat_id = callback.message.chat.id
     action = callback.data
-
     if action == "panel_smart":
         force_offline_mode = True
         always_answer_mode = False
@@ -1370,10 +1196,8 @@ async def handle_panel_callbacks(callback: types.CallbackQuery):
         pass
 
 
-# --- ОБРАБОТЧИК КОМАНД ---
 async def process_bot_command(message: types.Message, user_input: str, is_owner: bool, bus_id: str = "") -> bool:
     global force_offline_mode, always_answer_mode, lockdown_mode, bot_badges_enabled, auto_owner_badge
-
     chat_id = message.chat.id
     raw_clean = user_input.strip()
     lower_text = raw_clean.lower()
@@ -1383,10 +1207,8 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
     if cmd_text.startswith("кнб "):
         parts = cmd_text.split()
         user_choice = parts[1] if len(parts) > 1 else ""
-        choices = ["камень", "ножницы", "бумага"]
-        if user_choice in choices:
-            bot_choice = random.choice(choices)
-            await send_smart_response(chat_id, bus_id, f"Мой ход — {bot_choice}.", is_direct=is_direct, mood="chat")
+        if user_choice in ["камень", "ножницы", "бумага"]:
+            await send_smart_response(chat_id, bus_id, f"Мой ход — {random.choice(['камень', 'ножницы', 'бумага'])}.", is_direct=is_direct, mood="chat")
             return True
 
     if cmd_text in ["игра", "тапалка", "game", "аякоджи игра"]:
@@ -1396,7 +1218,6 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
     if not is_owner:
         return False
 
-    # --- НОВЫЕ ФУНКЦИИ: СУФЛЁР (!совет), ПЕРСОНАЛЬНАЯ ЗАДАЧА (!задача), ЗАЧИСТКА (!чистка), ОТЛОЖЕННАЯ ОТПРАВКА ---
     if cmd_text in ["совет", "суфлер", "аякоджи совет"]:
         advice = await generate_shadow_advice(chat_id)
         if is_direct:
@@ -1414,7 +1235,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         elif rule_val:
             custom_chat_tasks[chat_id] = rule_val
             await save_settings()
-            await notify_owner_pm(f"🎯 Установлена индивидуальная задача для чата <code>{chat_id}</code>:\n<i>«{rule_val}»</i>")
+            await notify_owner_pm(f"🎯 Установлена задача для чата <code>{chat_id}</code>:\n<i>«{rule_val}»</i>")
         return True
 
     if cmd_text == "чистка" or cmd_text.startswith(("чистка ", "зачистка")):
@@ -1428,32 +1249,24 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
                 pass
         return True
 
-     delayed_match = re.match(r"^(?:отправь|напиши)\s+(?:через\s+)?(\d+)\s*(сек|мин|час|дн|ч|м|с)[а-я]*\s+(.+)$", cmd_text, re.I)
+    delayed_match = re.match(r"^(?:отправь|напиши)\s+(?:через\s+)?(\d+)\s*(сек|мин|час|дн|ч|м|с)[а-я]*\s+(.+)$", cmd_text, re.I)
     if delayed_match:
         qty = int(delayed_match.group(1))
         unit = delayed_match.group(2).lower()
         msg_body = delayed_match.group(3).strip()
         mult = 1 if unit in ["сек", "с"] else (3600 if unit in ["час", "ч"] else (86400 if unit == "дн" else 60))
         reminders_list.append({
-            "chat_id": chat_id,
-            "bus_id": bus_id,
-            "text": msg_body,
-            "time": time.time() + qty * mult,
-            "is_delayed_msg": True
+            "chat_id": chat_id, "bus_id": bus_id, "text": msg_body,
+            "time": time.time() + qty * mult, "is_delayed_msg": True
         })
         await save_reminders()
-        await notify_owner_pm(f"⏳ Отложенное сообщение в чат <code>{chat_id}</code> запланировано через {qty} {unit}:\n<i>«{msg_body}»</i>")
+        await notify_owner_pm(f"⏳ Отложенное сообщение в чат <code>{chat_id}</code> через {qty} {unit}:\n<i>«{msg_body}»</i>")
         return True
 
-    # ПЕРЕКЛЮЧЕНИЕ АВТО-ЗНАЧКОВ АЯНОКОДЖИ
     if cmd_text in ["автозначок", "автоэмодзи"]:
         auto_owner_badge = not auto_owner_badge
         await save_settings()
-        await send_smart_response(
-            chat_id, bus_id,
-            f"Авто-эмодзи на твоих сообщениях: <b>{'ВКЛ' if auto_owner_badge else 'ВЫКЛ'}</b>",
-            is_direct=is_direct, mood="chat"
-        )
+        await send_smart_response(chat_id, bus_id, f"Авто-эмодзи на твоих сообщениях: <b>{'ВКЛ' if auto_owner_badge else 'ВЫКЛ'}</b>", is_direct=is_direct, mood="chat")
         return True
 
     if cmd_text in ["значки вкл", "эмодзи вкл"]:
@@ -1468,22 +1281,15 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         await send_smart_response(chat_id, bus_id, "Кастомные эмодзи бота выключены.", is_direct=is_direct, mood="none")
         return True
 
-    # 1. МУТ, РАЗМУТ, ЧС (БАН) И РАЗБАН
     if cmd_text == "мут" or cmd_text.startswith(("мут ", "аякоджи мут", "mute")):
         parts = cmd_text.split()
-        duration_minutes = None
-        for p in parts[1:]:
-            if p.isdigit():
-                duration_minutes = int(p)
-                break
-
+        duration_minutes = next((int(p) for p in parts[1:] if p.isdigit()), None)
         if duration_minutes:
             muted_chats[chat_id] = time.time() + (duration_minutes * 60)
             notice = f"Собеседник изолирован на {duration_minutes} мин."
         else:
             muted_chats[chat_id] = float("inf")
             notice = "Собеседник отправлен в бессрочный мут."
-
         await save_settings()
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Снять изоляцию", callback_data="ayakoji_unmute_direct")]])
         await send_smart_response(chat_id, bus_id, notice, is_direct=is_direct, reply_markup=kb, mood="cold")
@@ -1500,7 +1306,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         blocked_guests[chat_id] = float("inf")
         muted_chats[chat_id] = float("inf")
         await save_settings()
-        await notify_owner_pm(f"⛔ Контакт <code>{chat_id}</code> внесен в <b>Чёрный список (Полная блокировка)</b>.")
+        await notify_owner_pm(f"⛔ Контакт <code>{chat_id}</code> внесен в <b>Чёрный список</b>.")
         return True
 
     if cmd_text in ["разбан", "унбан", "аякоджи разбан"]:
@@ -1513,32 +1319,23 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
     if cmd_text in ["локдаун", "аякоджи локдаун"]:
         lockdown_mode = not lockdown_mode
         await save_settings()
-        await send_smart_response(
-            chat_id, bus_id,
-            f"Режим Локдауна: <b>{'ВКЛЮЧЕН (Только Свои/VIP)' if lockdown_mode else 'ВЫКЛЮЧЕН'}</b>.",
-            is_direct=is_direct, mood="cold"
-        )
+        await send_smart_response(chat_id, bus_id, f"Режим Локдауна: <b>{'ВКЛЮЧЕН' if lockdown_mode else 'ВЫКЛЮЧЕН'}</b>.", is_direct=is_direct, mood="cold")
         return True
 
-    # 2. СПАМ И СТОПСПАМ
     if cmd_text.startswith(("спам ", "аякоджи спам ")):
         if chat_id in active_spams:
             active_spams[chat_id].cancel()
-
         clean_spam_cmd = re.sub(r"^[!/]*(?:аякоджи\s+)?спам\s+", "", raw_clean, flags=re.I).strip()
         parts = clean_spam_cmd.split(maxsplit=1)
         spam_count = None
         spam_text = clean_spam_cmd
-
         if len(parts) > 1 and parts[0].isdigit():
             spam_count = int(parts[0])
             spam_text = parts[1]
         elif len(parts) > 1 and parts[0].lower() in ["инф", "бесконечно", "inf"]:
             spam_text = parts[1]
-
         if spam_text.strip():
-            task = asyncio.create_task(spam_worker(chat_id, bus_id, spam_text.strip(), count=spam_count))
-            active_spams[chat_id] = task
+            active_spams[chat_id] = asyncio.create_task(spam_worker(chat_id, bus_id, spam_text.strip(), count=spam_count))
         return True
 
     if cmd_text in ["стопспам", "стоп спам", "стоп", "stop", "стоп аякоджи"]:
@@ -1548,8 +1345,7 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
             await send_smart_response(chat_id, bus_id, "Рассылка остановлена.", is_direct=is_direct, mood="chat")
             return True
 
-    # 3. ПАНЕЛЬ, ПРОФИЛЬ, ДОСЬЕ, БЭКАП
-    if cmd_text in ["panel", "панель", "аякоджи панель", "меню"]:
+    if cmd_text in ["panel", "панель", "аякоджи панель", "меню", "статус", "аякоджи статус"]:
         text, kb = build_control_panel(chat_id)
         await send_smart_response(chat_id, bus_id, text, is_direct=is_direct, reply_markup=kb, mood="none")
         return True
@@ -1578,15 +1374,13 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
     if cmd_text.startswith(("проверь ", "скан ", "аякоджи проверь ")):
         target_link = re.sub(r"^(?:аякоджи\s+)?(?:проверь|скан)\s+", "", cmd_text, flags=re.I).strip()
         if target_link:
-            sec_info = await inspect_url_security(target_link)
-            sec_report = format_security_report(sec_info)
+            sec_report = format_security_report(await inspect_url_security(target_link))
             if is_direct:
                 await send_smart_response(chat_id, "", sec_report, is_direct=True, mood="none")
             else:
                 await notify_owner_pm(sec_report)
             return True
 
-    # 4. СВОЙ / ЧУЖОЙ / ПРИЗРАК
     if cmd_text in ["свой", "вип", "аякоджи свой"]:
         vip_contacts[chat_id] = True
         await save_settings()
@@ -1602,15 +1396,14 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
     if cmd_text in ["призрак", "аякоджи призрак"]:
         if ghost_chats.get(chat_id, False):
             ghost_chats.pop(chat_id, None)
-            st_t = "ВЫКЛЮЧЕН (бот снова отвечает)"
+            st_t = "ВЫКЛЮЧЕН"
         else:
             ghost_chats[chat_id] = True
-            st_t = "ВКЛЮЧЕН (тихая слежка без ответов)"
+            st_t = "ВКЛЮЧЕН"
         await save_settings()
         await notify_owner_pm(f"👻 Режим Призрака в чате <code>{chat_id}</code>: <b>{st_t}</b>.")
         return True
 
-    # 5. УПРАВЛЕНИЕ ОНЛАЙНОМ И ГОЛОСОМ
     if cmd_text in ["аякоджи я тут", "онлайн", "я тут", "молчи", "аякоджи молчи", "автоответ выкл"]:
         force_offline_mode = False
         always_answer_mode = False
@@ -1620,13 +1413,13 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
     if cmd_text in ["аякоджи я отошел", "офлайн", "оффлайн", "отошел", "автоответ вкл"]:
         force_offline_mode = True
         always_answer_mode = False
-        await send_smart_response(chat_id, bus_id, "Умный автоответ включен (не перебивает тебя, когда ты сам пишешь).", is_direct=is_direct, mood="chat")
+        await send_smart_response(chat_id, bus_id, "Умный автоответ включен.", is_direct=is_direct, mood="chat")
         return True
 
     if cmd_text in ["отвечай", "аякоджи отвечай"]:
         force_offline_mode = True
         always_answer_mode = True
-        await send_smart_response(chat_id, bus_id, "Режим полного перехвата: отвечаю на все сообщения собеседников.", is_direct=is_direct, mood="chat")
+        await send_smart_response(chat_id, bus_id, "Режим полного перехвата включен.", is_direct=is_direct, mood="chat")
         return True
 
     if cmd_text in ["аякоджи голос вкл", "голос вкл", "голосовой режим вкл"]:
@@ -1641,7 +1434,6 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         await send_smart_response(chat_id, bus_id, "Постоянный голосовой режим отключен.", is_direct=is_direct, mood="chat")
         return True
 
-    # 6. ПАМЯТЬ, КОДЕР, КАРТИНКИ, ПОИСК, ОТЧЕТ
     if cmd_text.startswith(("запомни ", "аякоджи запомни ")):
         fact = re.sub(r"^[!/]*(?:аякоджи\s+)?запомни\s+", "", raw_clean, flags=re.I).strip()
         if fact:
@@ -1689,11 +1481,8 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         rem_text = remind_match.group(3).strip()
         mult = 1 if unit in ["сек", "с"] else (3600 if unit in ["час", "ч"] else (86400 if unit == "дн" else 60))
         reminders_list.append({
-            "chat_id": chat_id,
-            "bus_id": bus_id,
-            "text": rem_text,
-            "time": time.time() + qty * mult,
-            "is_delayed_msg": False
+            "chat_id": chat_id, "bus_id": bus_id, "text": rem_text,
+            "time": time.time() + qty * mult, "is_delayed_msg": False
         })
         await save_reminders()
         await send_smart_response(chat_id, bus_id, f"Таймер установлен: <i>«{rem_text}»</i>.", is_direct=is_direct, mood="chat")
@@ -1707,11 +1496,6 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         for _, info in list(business_visits.items())[-8:]:
             lines.append(f"• <b>{info.get('name')}</b> ({info.get('username')}) в {info.get('time')}:\n  <i>«{info.get('last_msg')}»</i>")
         await send_smart_response(chat_id, bus_id, "\n\n".join(lines), is_direct=is_direct, mood="none")
-        return True
-
-    if cmd_text in ["статус", "аякоджи статус"]:
-        text, kb = build_control_panel(chat_id)
-        await send_smart_response(chat_id, bus_id, text, is_direct=is_direct, reply_markup=kb, mood="none")
         return True
 
     if cmd_text in ["сброс", "аякоджи сброс", "аякоджи кэш"]:
@@ -1734,10 +1518,7 @@ async def handle_unmute_callback(callback: types.CallbackQuery):
     await save_settings()
     await callback.answer("Изоляция снята.")
     try:
-        await callback.message.edit_text(
-            append_custom_emoji_html("Изоляция собеседника снята.", mood="chat"),
-            parse_mode="HTML"
-        )
+        await callback.message.edit_text(append_custom_emoji_html("Изоляция собеседника снята.", mood="chat"), parse_mode="HTML")
     except Exception:
         pass
 
@@ -1758,10 +1539,8 @@ async def handle_edited_business_message(message: types.Message):
     bus_id = message.business_connection_id
     msg_id = message.message_id
     bot_id = bot.id if bot else 0
-
     if not message.from_user or message.from_user.is_bot or message.from_user.id == bot_id:
         return
-
     is_owner = is_authorized_owner(message.from_user.id) or (message.from_user.id != chat_id)
     if is_owner:
         owner_text = message.text or message.caption or ""
@@ -1771,13 +1550,11 @@ async def handle_edited_business_message(message: types.Message):
             except Exception:
                 pass
         return
-
     old_rec = business_msg_cache.get(chat_id, msg_id)
     new_text = message.text or message.caption or "[медиа]"
     user_name = message.from_user.full_name or "Гость"
     username_str = f"@{message.from_user.username}" if message.from_user.username else f"ID {chat_id}"
     m_type, f_id = extract_media_meta(message)
-
     if old_rec and old_rec.get("text") != new_text:
         await notify_owner_pm(
             f"👁 <b>Изменено сообщение:</b>\n"
@@ -1809,15 +1586,12 @@ async def handle_deleted_business_messages(event: BusinessMessagesDeleted):
             await notify_owner_pm(alert, media_type=m_type, file_id=f_id)
 
 
-# --- ЛИЧНЫЙ ЧАТ С БОТОМ (OWNER LOCK) ---
 @dp.message(F.business_connection_id.is_(None))
 async def handle_direct_message(message: types.Message):
     if not message.from_user or message.from_user.is_bot:
         return
-
     user_id = message.from_user.id
     chat_id = message.chat.id
-
     if not is_authorized_owner(user_id):
         now = time.time()
         if now - unauth_alert_cooldowns.get(user_id, 0) > 120:
@@ -1828,8 +1602,7 @@ async def handle_direct_message(message: types.Message):
             await notify_owner_pm(
                 f"🚨 <b>Попытка чужого доступа в личку бота!</b>\n"
                 f"• Кто: <b>{intruder_name}</b> ({intruder_uname}, ID <code>{user_id}</code>)\n"
-                f"• Написал: <i>«{intruder_txt}»</i>\n"
-                f"• Статус: Доступ заблокирован."
+                f"• Написал: <i>«{intruder_txt}»</i>"
             )
         await send_smart_response(
             chat_id, "",
@@ -1865,66 +1638,47 @@ async def handle_direct_message(message: types.Message):
         return
 
     await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-
     actual_prompt = user_input
     if should_auto_search(user_input):
         web_facts = await duckduckgo_search(clean_search_query(user_input))
         if web_facts:
             actual_prompt = f"Вопрос: '{user_input}'.\nСвежие данные:\n{web_facts}"
 
-    voice_triggers = ["в голосовом", "голосовым", "голосом", "скажи в гс", "озвучь"]
-    forced_voice = any(t in user_input.lower() for t in voice_triggers)
-
+    forced_voice = any(t in user_input.lower() for t in ["в голосовом", "голосовым", "голосом", "скажи в гс", "озвучь"])
     reply = await ask_ai(actual_prompt, chat_id, get_direct_prompt(), max_tokens=400)
     should_voice = is_voice or forced_voice or voice_chat_modes.get(chat_id, False)
     await send_smart_response(chat_id, "", reply, is_direct=True, send_as_voice=should_voice, context_text=user_input)
 
 
-# --- ТЕЛЕГРАМ БИЗНЕС (ПОЛНАЯ ЗАЩИТА + КАСТОМНЫЕ ЭМОДЗИ) ---
 @dp.business_message()
 async def handle_business_message(message: types.Message):
     chat_id = message.chat.id
     bus_id = message.business_connection_id
     msg_id = message.message_id
     bot_id = bot.id if bot else 0
-
-    if not message.from_user or message.from_user.is_bot or message.from_user.id == bot_id:
+    if not message.from_user or message.from_user.is_bot or message.from_user.id == bot_id or chat_id == bot_id:
         return
-
-    if chat_id == bot_id:
-        return
-
     if msg_id in processed_message_ids:
         return
     processed_message_ids.add(msg_id)
 
     is_owner = is_authorized_owner(message.from_user.id) or (message.from_user.id != chat_id)
 
-    # 1. ЕСЛИ ПИШЕТ ВЛАДЕЛЕЦ (КИРИТО)
     if is_owner:
         owner_text = message.text or message.caption or ""
-
-        # 🔐 ЗАЩИТА ТЕБЯ ОТ СЛУЧАЙНОГО СЛИВА КЛЮЧЕЙ API И КАРТ В ЧУЖОЙ ЧАТ
         if owner_text and detect_owner_secret_leak(owner_text):
             try:
                 await bot(DeleteBusinessMessages(business_connection_id=bus_id, message_ids=[msg_id]))
             except Exception:
                 pass
-            await notify_owner_pm(
-                "🔐 <b>DLP SHIELD (Защита от утечки твоих секретов):</b>\n"
-                "Я мгновенно перехватил и удалил твое сообщение в бизнес-чате, так как в нем обнаружен секретный API-ключ, токен или номер карты!"
-            )
+            await notify_owner_pm("🔐 <b>DLP SHIELD:</b> Твое сообщение удалено, так как в нем обнаружен секретный API-ключ или номер карты!")
             return
-
-        if owner_text.strip():
-            if await process_bot_command(message, owner_text, is_owner=True, bus_id=bus_id):
-                try:
-                    await bot(DeleteBusinessMessages(business_connection_id=bus_id, message_ids=[msg_id]))
-                except Exception:
-                    pass
-                return
-
-        # ✨ АВТО-ЭМОДЗИ НА ТВОИХ СОБСТВЕННЫХ СООБЩЕНИЯХ
+        if owner_text.strip() and await process_bot_command(message, owner_text, is_owner=True, bus_id=bus_id):
+            try:
+                await bot(DeleteBusinessMessages(business_connection_id=bus_id, message_ids=[msg_id]))
+            except Exception:
+                pass
+            return
         if auto_owner_badge and message.text:
             already_has = any(e.type == "custom_emoji" for e in (message.entities or []))
             if not already_has:
@@ -1932,20 +1686,12 @@ async def handle_business_message(message: types.Message):
                 base_html = getattr(message, "html_text", None) or message.text
                 edited_html = f'{base_html.rstrip()} <tg-emoji emoji-id="{chosen_id}">🤩</tg-emoji>'
                 try:
-                    await bot.edit_message_text(
-                        text=edited_html,
-                        chat_id=chat_id,
-                        message_id=msg_id,
-                        business_connection_id=bus_id,
-                        parse_mode="HTML"
-                    )
+                    await bot.edit_message_text(text=edited_html, chat_id=chat_id, message_id=msg_id, business_connection_id=bus_id, parse_mode="HTML")
                 except Exception:
                     pass
-
         owner_chat_activity[chat_id] = time.time()
         return
 
-    # 2. ЕСЛИ ПИШЕТ СОБЕСЕДНИК (ГОСТЬ)
     user_name = message.from_user.full_name or "Собеседник"
     username_str = f"@{message.from_user.username}" if message.from_user.username else "без юзернейма"
     now = time.time()
@@ -1958,10 +1704,9 @@ async def handle_business_message(message: types.Message):
             except Exception:
                 pass
             return
-        else:
-            muted_chats.pop(chat_id, None)
-            blocked_guests.pop(chat_id, None)
-            await save_settings()
+        muted_chats.pop(chat_id, None)
+        blocked_guests.pop(chat_id, None)
+        await save_settings()
 
     if lockdown_mode and chat_id not in vip_contacts:
         try:
@@ -1977,7 +1722,7 @@ async def handle_business_message(message: types.Message):
             pass
         muted_chats[chat_id] = now + 3600
         await save_settings()
-        await notify_owner_pm(f"🦠 <b>FILE SHIELD:</b> Заблокирован и удален опасный файл <code>{message.document.file_name}</code> от {user_name} ({username_str}).")
+        await notify_owner_pm(f"🦠 <b>FILE SHIELD:</b> Удален опасный файл <code>{message.document.file_name}</code> от {user_name} ({username_str}).")
         return
 
     raw_txt = message.text or message.caption or ""
@@ -1991,7 +1736,6 @@ async def handle_business_message(message: types.Message):
         await notify_owner_pm(f"💣 <b>ANTI-CRASH:</b> Удалена лаг-бомба от {user_name} ({username_str}).")
         return
 
-    # 🤖 БЛОКИРОВКА РЕКЛАМНЫХ СПАМ-БОТОВ БЕЗ ТРАТЫ ТОКЕНОВ ИИ
     if raw_txt and chat_id not in vip_contacts and detect_ad_spam_bot(raw_txt):
         try:
             await bot(DeleteBusinessMessages(business_connection_id=bus_id, message_ids=[msg_id]))
@@ -2007,14 +1751,10 @@ async def handle_business_message(message: types.Message):
     if not user_input.strip():
         return
 
-    # 🎧 АВТО-ПЕРЕСЫЛКА РАСШИФРОВКИ ЧУЖИХ ГС И КРУЖОЧКОВ ТЕБЕ В ЛИЧКУ
     if is_voice:
-        asyncio.create_task(notify_owner_pm(
-            f"🎧 <b>Расшифровка ГС от {user_name} ({username_str}):</b>\n<i>«{user_input}»</i>"
-        ))
+        asyncio.create_task(notify_owner_pm(f"🎧 <b>Расшифровка ГС от {user_name} ({username_str}):</b>\n<i>«{user_input}»</i>"))
 
     m_type, f_id = extract_media_meta(message)
-
     business_msg_cache.put(chat_id, msg_id, {
         "name": user_name, "username": username_str, "text": user_input,
         "media_type": m_type, "file_id": f_id, "time": datetime.datetime.now().strftime("%H:%M:%S")
@@ -2029,21 +1769,13 @@ async def handle_business_message(message: types.Message):
         u_hist.append(username_str)
 
     business_visits[str(chat_id)] = {
-        "name": user_name,
-        "username": username_str,
-        "time": datetime.datetime.now().strftime("%H:%M"),
-        "last_msg": user_input[:100],
-        "name_history": n_hist[-5:],
-        "username_history": u_hist[-5:],
+        "name": user_name, "username": username_str, "time": datetime.datetime.now().strftime("%H:%M"),
+        "last_msg": user_input[:100], "name_history": n_hist[-5:], "username_history": u_hist[-5:],
     }
     asyncio.create_task(save_visits())
 
     if chat_id not in vip_contacts and detect_scam_attempt(user_input):
-        asyncio.create_task(notify_owner_pm(
-            f"🚨 <b>SCAM SHIELD (Попытка выманивания кода/денег):</b>\n"
-            f"• От: <b>{user_name}</b> ({username_str})\n"
-            f"• Текст: <i>«{user_input[:250]}»</i>"
-        ))
+        asyncio.create_task(notify_owner_pm(f"🚨 <b>SCAM SHIELD:</b> Попытка выманивания кода/денег от {user_name} ({username_str}):\n<i>«{user_input[:250]}»</i>"))
 
     guest_url = re.search(r"https?://[^\s]+", user_input)
     if guest_url:
@@ -2055,33 +1787,20 @@ async def handle_business_message(message: types.Message):
         urgent_alert_cooldowns[chat_id] = now
         asyncio.create_task(notify_owner_pm(f"⚠️ <b>Срочное сообщение от {user_name} ({username_str}):</b>\n<i>«{user_input[:250]}»</i>"))
 
-    if ghost_chats.get(chat_id, False):
+    if ghost_chats.get(chat_id, False) or (not force_offline_mode and not always_answer_mode):
         return
-
-    if not force_offline_mode and not always_answer_mode:
-        return
-
     if not always_answer_mode and (now - owner_chat_activity.get(chat_id, 0)) < CHAT_OWNER_ACTIVE_PAUSE:
         return
-
     if await check_chat_flood(chat_id, bus_id, max_msgs=5, window_seconds=6.0):
         return
 
     guest_cmd_try = re.sub(r"^[!/]+", "", user_input.lower()).strip()
     if guest_cmd_try.startswith(("спам ", "мут", "размут", "панель", "бэкап", "чс", "бан", "чистка")):
-        await send_smart_response(
-            chat_id, bus_id,
-            "У тебя нет прав доступа к командам системы. Я подчиняюсь только Кирито.",
-            is_direct=False, mood="cold"
-        )
+        await send_smart_response(chat_id, bus_id, "У тебя нет прав доступа к командам системы. Я подчиняюсь только Кирито.", is_direct=False, mood="cold")
         return
 
     if detect_prompt_injection(user_input):
-        await send_smart_response(
-            chat_id, bus_id,
-            "Попытка переписать мои директивы отклонена. Доступ есть только у Кирито.",
-            is_direct=False, mood="cold"
-        )
+        await send_smart_response(chat_id, bus_id, "Попытка переписать мои директивы отклонена. Доступ есть только у Кирито.", is_direct=False, mood="cold")
         return
 
     try:
@@ -2089,32 +1808,22 @@ async def handle_business_message(message: types.Message):
     except Exception:
         pass
 
-    target_prompt = get_guest_prompt(chat_id)
-    reply = await ask_ai(user_input, chat_id, target_prompt, max_tokens=160)
-
+    reply = await ask_ai(user_input, chat_id, get_guest_prompt(chat_id), max_tokens=160)
     should_voice = is_voice or voice_chat_modes.get(chat_id, False)
-    await send_smart_response(
-        chat_id, bus_id, reply,
-        is_direct=False, send_as_voice=should_voice,
-        context_text=user_input, mood="auto"
-    )
+    await send_smart_response(chat_id, bus_id, reply, is_direct=False, send_as_voice=should_voice, context_text=user_input, mood="auto")
 
 
-# --- ФОНОВАЯ ОЧИСТКА И ОТЛОЖЕННЫЕ СООБЩЕНИЯ ---
 async def cleaner_and_reminders_task():
     while True:
         try:
             await asyncio.sleep(5)
             now = time.time()
             changed = False
-
             for cid in [c for c, t in muted_chats.items() if t != float("inf") and now >= t]:
                 del muted_chats[cid]
                 changed = True
-
             if changed:
                 await save_settings()
-
             triggered = [r for r in reminders_list if now >= r.get("time", 0)]
             if triggered:
                 for rem in triggered:
@@ -2151,23 +1860,16 @@ async def main():
     if not BOT_TOKEN:
         logger.critical("TELEGRAM_BOT_TOKEN не задан!")
         return
-
     web_runner = await setup_web_app()
     bg_task = asyncio.create_task(cleaner_and_reminders_task())
-
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         logger.info(f"Ayakoji Absolute Shield онлайн! Владелец: {OWNER_ID}")
         await dp.start_polling(
             bot,
             allowed_updates=[
-                "message",
-                "edited_message",
-                "callback_query",
-                "business_connection",
-                "business_message",
-                "edited_business_message",
-                "deleted_business_messages",
+                "message", "edited_message", "callback_query", "business_connection",
+                "business_message", "edited_business_message", "deleted_business_messages",
             ]
         )
     except TelegramConflictError:
