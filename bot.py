@@ -48,7 +48,6 @@ logger = logging.getLogger("AyakojiCore")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 GAME_URL = "https://kirito-fd.github.io/k1rit0/"
 
-# Твой персональный Telegram ID (только этот ID имеет доступ к управлению ботом)
 OWNER_ID = int(os.getenv("OWNER_ID", "6911695017"))
 owner_pm_chat_id: int = OWNER_ID
 
@@ -60,8 +59,8 @@ CHAT_OWNER_ACTIVE_PAUSE = 90  # Пауза 90 сек, когда ты сам п�
 force_offline_mode = True
 always_answer_mode = False
 lockdown_mode = False
-bot_badges_enabled = True     # Ставить кастомные эмодзи Аянокоджи в ответах бота
-auto_owner_badge = True       # Ставить кастомные эмодзи Аянокоджи в конец твоих сообщений
+bot_badges_enabled = True     # Кастомные эмодзи Аянокоджи в ответах бота
+auto_owner_badge = True       # Кастомные эмодзи Аянокоджи в конец твоих сообщений
 owner_chat_activity: Dict[int, float] = {}
 
 # --- КАСТОМНЫЕ ЭМОДЗИ АЯНОКОДЖИ ПО ХАРАКТЕРУ ---
@@ -129,6 +128,21 @@ SCAM_PATTERNS = [
     r"переведи\s+на\s+карту", r"cvv|три\s+цифры"
 ]
 
+AD_SPAM_BOT_PATTERNS = [
+    r"пассивн[а-я]+\s+доход", r"заработ[а-я]+\s+без\s+вложен", r"крипто\s*сигнал",
+    r"ссылк[а-я]+\s+в\s+профил", r"переходи\s+в\s+био", r"казино|1win|1xbet|melbet",
+    r"раскрутк[а-я]+\s+счет", r"инвестиц[а-я]+\s+от\s+\d+"
+]
+
+# Защита владельца от случайной отправки своих API-ключей или токенов в чужой чат
+OWNER_SECRET_LEAK_PATTERNS = [
+    r"AIzaSy[A-Za-z0-9_-]{33}",
+    r"AQ\.Ab8[A-Za-z0-9_-]{30,}",
+    r"gsk_[A-Za-z0-9]{40,}",
+    r"\b\d{8,11}:[A-Za-z0-9_-]{35}\b",
+    r"\b(?:\d[ -]*?){16}\b"
+]
+
 COLD_WORDS_MARKERS = [
     "изолирован", "мут", "блокир", "закрыт", "отклонен", "нет прав", "шума", "флуд",
     "жалко", "слабость", "глупо", "хватит", "отстань", "не твое дело", "молчи",
@@ -142,7 +156,6 @@ LAUGH_WORDS_MARKERS = [
 
 
 def select_ayakoji_emoji_id(text: str, context_text: str = "", forced_mood: str = "auto") -> str:
-    """Подбирает нужный custom_emoji_id Аянокоджи под эмоцию и характер сообщения."""
     if forced_mood == "cold":
         return EMOJI_COLD_MUTE
     if forced_mood == "laugh":
@@ -159,7 +172,6 @@ def select_ayakoji_emoji_id(text: str, context_text: str = "", forced_mood: str 
 
 
 def append_custom_emoji_html(text: str, context_text: str = "", mood: str = "auto") -> str:
-    """Добавляет кастомный Премиум-эмодзи Аянокоджи в конец сообщения."""
     if not bot_badges_enabled or mood == "none" or "<tg-emoji" in text:
         return text
     emoji_id = select_ayakoji_emoji_id(text, context_text, forced_mood=mood)
@@ -178,6 +190,15 @@ def detect_prompt_injection(text: str) -> bool:
 def detect_scam_attempt(text: str) -> bool:
     lower = text.lower()
     return any(re.search(pat, lower) for pat in SCAM_PATTERNS)
+
+
+def detect_ad_spam_bot(text: str) -> bool:
+    lower = text.lower()
+    return any(re.search(pat, lower) for pat in AD_SPAM_BOT_PATTERNS)
+
+
+def detect_owner_secret_leak(text: str) -> bool:
+    return any(re.search(pat, text) for pat in OWNER_SECRET_LEAK_PATTERNS)
 
 
 def detect_lag_bomb(text: str) -> bool:
@@ -237,6 +258,10 @@ class MessageCache:
 
     def get(self, chat_id: int, msg_id: int) -> Optional[Dict[str, Any]]:
         return self._store.get((chat_id, msg_id))
+
+    def get_recent_ids(self, chat_id: int, limit: int = 20) -> List[int]:
+        ids = [mid for (cid, mid) in reversed(self._store.keys()) if cid == chat_id]
+        return ids[:limit]
 
 
 business_msg_cache = MessageCache(capacity=3000)
@@ -485,16 +510,17 @@ def load_settings():
     v_modes = {int(k): v for k, v in d.get("voice_chat_modes", {}).items()}
     vips = {int(k): v for k, v in d.get("vip_contacts", {}).items()}
     ghosts = {int(k): v for k, v in d.get("ghost_chats", {}).items()}
+    tasks = {int(k): str(v) for k, v in d.get("custom_chat_tasks", {}).items()}
     lockdown_mode = bool(d.get("lockdown_mode", False))
     bot_badges_enabled = bool(d.get("bot_badges_enabled", True))
     auto_owner_badge = bool(d.get("auto_owner_badge", True))
     saved_owner = int(d.get("owner_pm_chat_id", OWNER_ID))
     if saved_owner != 0:
         owner_pm_chat_id = saved_owner
-    return mutes, bans, v_modes, vips, ghosts
+    return mutes, bans, v_modes, vips, ghosts, tasks
 
 
-muted_chats, blocked_guests, voice_chat_modes, vip_contacts, ghost_chats = load_settings()
+muted_chats, blocked_guests, voice_chat_modes, vip_contacts, ghost_chats, custom_chat_tasks = load_settings()
 reminders_list: List[Dict[str, Any]] = sync_load_json(REMINDERS_FILE, [])
 business_visits: Dict[str, Dict[str, Any]] = sync_load_json(VISITS_FILE, {})
 long_term_memory: List[str] = sync_load_json(MEMORY_FILE, [])
@@ -510,6 +536,7 @@ async def save_settings():
         "voice_chat_modes": voice_chat_modes,
         "vip_contacts": vip_contacts,
         "ghost_chats": ghost_chats,
+        "custom_chat_tasks": custom_chat_tasks,
         "lockdown_mode": lockdown_mode,
         "bot_badges_enabled": bot_badges_enabled,
         "auto_owner_badge": auto_owner_badge,
@@ -535,7 +562,7 @@ async def save_histories():
 
 def build_backup_bytes() -> bytes:
     payload = {
-        "ayakoji_backup_version": "2.0",
+        "ayakoji_backup_version": "2.1",
         "timestamp": datetime.datetime.now().isoformat(),
         "settings": {
             "muted_chats": muted_chats,
@@ -543,6 +570,7 @@ def build_backup_bytes() -> bytes:
             "voice_chat_modes": voice_chat_modes,
             "vip_contacts": vip_contacts,
             "ghost_chats": ghost_chats,
+            "custom_chat_tasks": custom_chat_tasks,
             "lockdown_mode": lockdown_mode,
             "bot_badges_enabled": bot_badges_enabled,
             "auto_owner_badge": auto_owner_badge,
@@ -556,7 +584,7 @@ def build_backup_bytes() -> bytes:
 
 
 async def restore_from_backup_data(data: Dict[str, Any]) -> bool:
-    global muted_chats, blocked_guests, voice_chat_modes, vip_contacts, ghost_chats, lockdown_mode, bot_badges_enabled, auto_owner_badge
+    global muted_chats, blocked_guests, voice_chat_modes, vip_contacts, ghost_chats, custom_chat_tasks, lockdown_mode, bot_badges_enabled, auto_owner_badge
     if "ayakoji_backup_version" not in data:
         return False
     st = data.get("settings", {})
@@ -565,6 +593,7 @@ async def restore_from_backup_data(data: Dict[str, Any]) -> bool:
     voice_chat_modes = {int(k): v for k, v in st.get("voice_chat_modes", {}).items()}
     vip_contacts = {int(k): v for k, v in st.get("vip_contacts", {}).items()}
     ghost_chats = {int(k): v for k, v in st.get("ghost_chats", {}).items()}
+    custom_chat_tasks = {int(k): str(v) for k, v in st.get("custom_chat_tasks", {}).items()}
     lockdown_mode = bool(st.get("lockdown_mode", False))
     bot_badges_enabled = bool(st.get("bot_badges_enabled", True))
     auto_owner_badge = bool(st.get("auto_owner_badge", True))
@@ -650,6 +679,7 @@ def format_user_profile_card(chat_id: int, chat_obj: Optional[types.Chat] = None
     reg_period, trust_level = estimate_account_age(chat_id)
     past_names = visit.get("name_history", [name])
     past_users = visit.get("username_history", [username])
+    task_rule = custom_chat_tasks.get(chat_id, "Нет")
 
     if is_authorized_owner(chat_id):
         role = "👑 Создатель системы (Кирито)"
@@ -669,6 +699,7 @@ def format_user_profile_card(chat_id: int, chat_obj: Optional[types.Chat] = None
         f"• Регистрация: {reg_period}\n"
         f"• Доверие ID: {trust_level}\n"
         f"• Статус: {role}\n"
+        f"• Персональная задача: <i>{task_rule}</i>\n"
         f"• История имен: {', '.join(past_names)}\n"
         f"• История ников: {', '.join(past_users)}"
     )
@@ -753,6 +784,14 @@ def get_direct_prompt() -> str:
         return AYAKOJI_PROMPT_DIRECT_BASE
     mem_block = "\n".join(f"- {m}" for m in long_term_memory)
     return f"{AYAKOJI_PROMPT_DIRECT_BASE}\n\nПАМЯТЬ:\n{mem_block}"
+
+
+def get_guest_prompt(chat_id: int) -> str:
+    base = AYAKOJI_PROMPT_VIP if chat_id in vip_contacts else AYAKOJI_PROMPT_GUEST
+    custom_task = custom_chat_tasks.get(chat_id)
+    if custom_task:
+        return f"{base}\n\nСПЕЦИАЛЬНАЯ ЗАДАЧА ОТ КИРИТО ДЛЯ ЭТОГО СОБЕСЕДНИКА: {custom_task}"
+    return base
 
 
 # --- ИНИЦИАЛИЗАЦИЯ БОТА ---
@@ -1054,7 +1093,6 @@ async def send_smart_response(
                 if voice_path.exists():
                     voice_path.unlink(missing_ok=True)
 
-    # Прикрепляем кастомный эмодзи Аянокоджи под настроение ответа
     styled_text = append_custom_emoji_html(reply_text, context_text=context_text, mood=mood)
 
     try:
@@ -1136,6 +1174,29 @@ async def generate_psychological_dossier(target_chat_id: int) -> str:
     sys_p = "Составь краткое психологическое досье по сообщениям собеседника: 1) Психотип; 2) Чего хочет; 3) Слабые места. Без звездочек (*)."
     res = await ask_ai(f"Объект: {name} ({username}). Сообщения:\n{joined_msgs}", target_chat_id + 999999, sys_p, max_tokens=350)
     return f"<b>Досье Белой Комнаты: {name} ({username})</b>\n\n{res}"
+
+
+async def generate_shadow_advice(target_chat_id: int) -> str:
+    """Генерирует 3 варианта ответа для владельца (Режим Теневого Суфлёра)."""
+    history = user_histories.get(target_chat_id, [])
+    visit_info = business_visits.get(str(target_chat_id), {})
+    name = visit_info.get("name", f"ID {target_chat_id}")
+    user_lines = [m["content"] for m in history if m.get("role") == "user"]
+    if not user_lines and visit_info.get("last_msg"):
+        user_lines = [visit_info["last_msg"]]
+    if not user_lines:
+        return "Нет последних сообщений собеседника для подготовки совета."
+
+    joined_msgs = "\n".join(f"- {line}" for line in user_lines[-6:])
+    sys_p = (
+        "Ты — Аянокоджи Киётака, теневой советник Кирито. Проанализируй последние реплики собеседника и предложи Кирито 3 готовых варианта ответа:\n"
+        "1. Доминирующий / Холодный\n"
+        "2. Дипломатичный / Спокойный\n"
+        "3. Тонкая манипуляция\n"
+        "Без звездочек (*), кратко и по делу."
+    )
+    res = await ask_ai(f"Собеседник {name} написал:\n{joined_msgs}", target_chat_id + 888888, sys_p, max_tokens=350)
+    return f"♟ <b>Теневой Суфлёр (Варианты ответа для {name}):</b>\n\n{res}"
 
 
 async def spam_worker(chat_id: int, bus_id: str, text_to_spam: str, count: Optional[int] = None):
@@ -1334,6 +1395,55 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
 
     if not is_owner:
         return False
+
+    # --- НОВЫЕ ФУНКЦИИ: СУФЛЁР (!совет), ПЕРСОНАЛЬНАЯ ЗАДАЧА (!задача), ЗАЧИСТКА (!чистка), ОТЛОЖЕННАЯ ОТПРАВКА ---
+    if cmd_text in ["совет", "суфлер", "аякоджи совет"]:
+        advice = await generate_shadow_advice(chat_id)
+        if is_direct:
+            await send_smart_response(chat_id, "", advice, is_direct=True, mood="none")
+        else:
+            await notify_owner_pm(advice)
+        return True
+
+    if cmd_text.startswith(("задача ", "сценарий ")):
+        rule_val = re.sub(r"^[!/]*(?:задача|сценарий)\s+", "", raw_clean, flags=re.I).strip()
+        if rule_val.lower() in ["сброс", "выкл", "нет"]:
+            custom_chat_tasks.pop(chat_id, None)
+            await save_settings()
+            await notify_owner_pm(f"🎯 Индивидуальная задача для чата <code>{chat_id}</code> сброшена.")
+        elif rule_val:
+            custom_chat_tasks[chat_id] = rule_val
+            await save_settings()
+            await notify_owner_pm(f"🎯 Установлена индивидуальная задача для чата <code>{chat_id}</code>:\n<i>«{rule_val}»</i>")
+        return True
+
+    if cmd_text == "чистка" or cmd_text.startswith(("чистка ", "зачистка")):
+        parts = cmd_text.split()
+        limit = int(parts[1]) if (len(parts) > 1 and parts[1].isdigit()) else 20
+        ids_to_del = business_msg_cache.get_recent_ids(chat_id, limit=min(limit, 50))
+        if bus_id and ids_to_del:
+            try:
+                await bot(DeleteBusinessMessages(business_connection_id=bus_id, message_ids=ids_to_del))
+            except Exception:
+                pass
+        return True
+
+     delayed_match = re.match(r"^(?:отправь|напиши)\s+(?:через\s+)?(\d+)\s*(сек|мин|час|дн|ч|м|с)[а-я]*\s+(.+)$", cmd_text, re.I)
+    if delayed_match:
+        qty = int(delayed_match.group(1))
+        unit = delayed_match.group(2).lower()
+        msg_body = delayed_match.group(3).strip()
+        mult = 1 if unit in ["сек", "с"] else (3600 if unit in ["час", "ч"] else (86400 if unit == "дн" else 60))
+        reminders_list.append({
+            "chat_id": chat_id,
+            "bus_id": bus_id,
+            "text": msg_body,
+            "time": time.time() + qty * mult,
+            "is_delayed_msg": True
+        })
+        await save_reminders()
+        await notify_owner_pm(f"⏳ Отложенное сообщение в чат <code>{chat_id}</code> запланировано через {qty} {unit}:\n<i>«{msg_body}»</i>")
+        return True
 
     # ПЕРЕКЛЮЧЕНИЕ АВТО-ЗНАЧКОВ АЯНОКОДЖИ
     if cmd_text in ["автозначок", "автоэмодзи"]:
@@ -1578,7 +1688,13 @@ async def process_bot_command(message: types.Message, user_input: str, is_owner:
         unit = remind_match.group(2).lower()
         rem_text = remind_match.group(3).strip()
         mult = 1 if unit in ["сек", "с"] else (3600 if unit in ["час", "ч"] else (86400 if unit == "дн" else 60))
-        reminders_list.append({"chat_id": chat_id, "bus_id": bus_id, "text": rem_text, "time": time.time() + qty * mult})
+        reminders_list.append({
+            "chat_id": chat_id,
+            "bus_id": bus_id,
+            "text": rem_text,
+            "time": time.time() + qty * mult,
+            "is_delayed_msg": False
+        })
         await save_reminders()
         await send_smart_response(chat_id, bus_id, f"Таймер установлен: <i>«{rem_text}»</i>.", is_direct=is_direct, mood="chat")
         return True
@@ -1787,6 +1903,19 @@ async def handle_business_message(message: types.Message):
     # 1. ЕСЛИ ПИШЕТ ВЛАДЕЛЕЦ (КИРИТО)
     if is_owner:
         owner_text = message.text or message.caption or ""
+
+        # 🔐 ЗАЩИТА ТЕБЯ ОТ СЛУЧАЙНОГО СЛИВА КЛЮЧЕЙ API И КАРТ В ЧУЖОЙ ЧАТ
+        if owner_text and detect_owner_secret_leak(owner_text):
+            try:
+                await bot(DeleteBusinessMessages(business_connection_id=bus_id, message_ids=[msg_id]))
+            except Exception:
+                pass
+            await notify_owner_pm(
+                "🔐 <b>DLP SHIELD (Защита от утечки твоих секретов):</b>\n"
+                "Я мгновенно перехватил и удалил твое сообщение в бизнес-чате, так как в нем обнаружен секретный API-ключ, токен или номер карты!"
+            )
+            return
+
         if owner_text.strip():
             if await process_bot_command(message, owner_text, is_owner=True, bus_id=bus_id):
                 try:
@@ -1795,7 +1924,7 @@ async def handle_business_message(message: types.Message):
                     pass
                 return
 
-        # ✨ АВТО-ЭМОДЗИ НА ТВОИХ СОБСТВЕННЫХ СООБЩЕНИЯХ (по смыслу: чат / смех / холод)
+        # ✨ АВТО-ЭМОДЗИ НА ТВОИХ СОБСТВЕННЫХ СООБЩЕНИЯХ
         if auto_owner_badge and message.text:
             already_has = any(e.type == "custom_emoji" for e in (message.entities or []))
             if not already_has:
@@ -1862,9 +1991,27 @@ async def handle_business_message(message: types.Message):
         await notify_owner_pm(f"💣 <b>ANTI-CRASH:</b> Удалена лаг-бомба от {user_name} ({username_str}).")
         return
 
+    # 🤖 БЛОКИРОВКА РЕКЛАМНЫХ СПАМ-БОТОВ БЕЗ ТРАТЫ ТОКЕНОВ ИИ
+    if raw_txt and chat_id not in vip_contacts and detect_ad_spam_bot(raw_txt):
+        try:
+            await bot(DeleteBusinessMessages(business_connection_id=bus_id, message_ids=[msg_id]))
+        except Exception:
+            pass
+        blocked_guests[chat_id] = float("inf")
+        muted_chats[chat_id] = float("inf")
+        await save_settings()
+        await notify_owner_pm(f"🤖 <b>SPAM-BOT KILLER:</b> Заблокирован рекламный спам от {user_name} ({username_str}).")
+        return
+
     user_input, is_voice = await extract_message_content(message)
     if not user_input.strip():
         return
+
+    # 🎧 АВТО-ПЕРЕСЫЛКА РАСШИФРОВКИ ЧУЖИХ ГС И КРУЖОЧКОВ ТЕБЕ В ЛИЧКУ
+    if is_voice:
+        asyncio.create_task(notify_owner_pm(
+            f"🎧 <b>Расшифровка ГС от {user_name} ({username_str}):</b>\n<i>«{user_input}»</i>"
+        ))
 
     m_type, f_id = extract_media_meta(message)
 
@@ -1921,7 +2068,7 @@ async def handle_business_message(message: types.Message):
         return
 
     guest_cmd_try = re.sub(r"^[!/]+", "", user_input.lower()).strip()
-    if guest_cmd_try.startswith(("спам ", "мут", "размут", "панель", "бэкап", "чс", "бан")):
+    if guest_cmd_try.startswith(("спам ", "мут", "размут", "панель", "бэкап", "чс", "бан", "чистка")):
         await send_smart_response(
             chat_id, bus_id,
             "У тебя нет прав доступа к командам системы. Я подчиняюсь только Кирито.",
@@ -1942,7 +2089,7 @@ async def handle_business_message(message: types.Message):
     except Exception:
         pass
 
-    target_prompt = AYAKOJI_PROMPT_VIP if chat_id in vip_contacts else AYAKOJI_PROMPT_GUEST
+    target_prompt = get_guest_prompt(chat_id)
     reply = await ask_ai(user_input, chat_id, target_prompt, max_tokens=160)
 
     should_voice = is_voice or voice_chat_modes.get(chat_id, False)
@@ -1953,7 +2100,7 @@ async def handle_business_message(message: types.Message):
     )
 
 
-# --- ФОНОВАЯ ОЧИСТКА ---
+# --- ФОНОВАЯ ОЧИСТКА И ОТЛОЖЕННЫЕ СООБЩЕНИЯ ---
 async def cleaner_and_reminders_task():
     while True:
         try:
@@ -1973,7 +2120,10 @@ async def cleaner_and_reminders_task():
                 for rem in triggered:
                     c_id = rem.get("chat_id")
                     b_id = rem.get("bus_id", "")
-                    await send_smart_response(c_id, b_id, f"⏰ Напоминание: <b>{rem.get('text')}</b>", is_direct=not bool(b_id), send_as_voice=True)
+                    if rem.get("is_delayed_msg"):
+                        await send_smart_response(c_id, b_id, rem.get("text", ""), is_direct=not bool(b_id), mood="auto")
+                    else:
+                        await send_smart_response(c_id, b_id, f"⏰ Напоминание: <b>{rem.get('text')}</b>", is_direct=not bool(b_id), send_as_voice=True)
                     reminders_list.remove(rem)
                 await save_reminders()
         except asyncio.CancelledError:
